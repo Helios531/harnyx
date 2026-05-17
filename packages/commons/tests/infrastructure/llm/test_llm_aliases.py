@@ -17,7 +17,9 @@ pytestmark = pytest.mark.anyio("asyncio")
 VERTEX_ALIASED_TOOL_MODELS = {
     "deepseek-ai/DeepSeek-V3.2-TEE": "deepseek-ai/deepseek-v3.2-maas",
     "openai/gpt-oss-20b": "publishers/openai/models/gpt-oss-20b-maas",
+    "openai/gpt-oss-20b-TEE": "publishers/openai/models/gpt-oss-20b-maas",
     "openai/gpt-oss-120b": "publishers/openai/models/gpt-oss-120b-maas",
+    "openai/gpt-oss-120b-TEE": "publishers/openai/models/gpt-oss-120b-maas",
     "zai-org/GLM-5-TEE": "zai-org/glm-5-maas",
 }
 GEMMA_CHUTES_MODEL = "google/gemma-4-31B-turbo-TEE"
