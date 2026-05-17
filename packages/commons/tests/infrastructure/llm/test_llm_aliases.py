@@ -15,7 +15,6 @@ from harnyx_commons.llm.schema import (
 pytestmark = pytest.mark.anyio("asyncio")
 
 VERTEX_ALIASED_TOOL_MODELS = {
-    "deepseek-ai/DeepSeek-V3.1-TEE": "deepseek-ai/deepseek-v3.1-maas",
     "deepseek-ai/DeepSeek-V3.2-TEE": "deepseek-ai/deepseek-v3.2-maas",
     "openai/gpt-oss-20b": "publishers/openai/models/gpt-oss-20b-maas",
     "openai/gpt-oss-120b": "publishers/openai/models/gpt-oss-120b-maas",

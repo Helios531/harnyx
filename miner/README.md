@@ -215,7 +215,6 @@ Treat `allowed_tool_models` as the runtime source of truth for `llm_chat` model 
 Current allowed `llm_chat` model ids in this repo:
 - `openai/gpt-oss-20b`
 - `openai/gpt-oss-120b`
-- `deepseek-ai/DeepSeek-V3.1-TEE`
 - `deepseek-ai/DeepSeek-V3.2-TEE`
 - `zai-org/GLM-5-TEE`
 - `Qwen/Qwen3.6-27B-TEE`
@@ -230,7 +229,6 @@ Thinking controls are provider/model specific:
 |-------|----------------------------------|----------|----------|
 | `openai/gpt-oss-20b` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` when routed through OpenRouter | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
 | `openai/gpt-oss-120b` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` when routed through OpenRouter | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
-| `deepseek-ai/DeepSeek-V3.1-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
 | `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
 | `zai-org/GLM-5-TEE` | Supported via `chat_template_kwargs.enable_thinking` | No verified knob; ignored | No verified knob; ignored |
 | `Qwen/Qwen3.6-27B-TEE` | Supported via `chat_template_kwargs.enable_thinking` when routed through the custom OpenAI-compatible Qwen endpoint | No verified knob; ignored | No verified knob; ignored |

@@ -45,7 +45,6 @@ class ModelPricing:
 MODEL_PRICING: Mapping[ToolModelName, ModelPricing] = {
     "openai/gpt-oss-20b": ModelPricing(0.03, 0.14, 0.0),
     "openai/gpt-oss-120b": ModelPricing(0.039, 0.18, 0.0),
-    "deepseek-ai/DeepSeek-V3.1-TEE": ModelPricing(0.27, 1.00, 0.0),
     "deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(0.28, 0.42, 0.0),
     "zai-org/GLM-5-TEE": ModelPricing(0.95, 2.55, 0.0),
     "Qwen/Qwen3.6-27B-TEE": ModelPricing(0.50, 2.00, 0.0),

@@ -21,6 +21,7 @@ def test_tool_model_thinking_capabilities_share_the_canonical_model_owner() -> N
     assert resolve_tool_model("openai/gpt-oss-120b") == "openai/gpt-oss-120b"
     assert resolve_tool_model("qwen/qwen3.6-27b-tee") == "Qwen/Qwen3.6-27B-TEE"
     assert resolve_tool_model("Qwen/Qwen3-Next-80B-A3B-Instruct") is None
+    assert resolve_tool_model("deepseek-ai/deepseek-v3.1-tee") is None
     assert deepseek is not None
     assert deepseek.chat_template_kwargs(enabled=True) == {"thinking": True}
     assert glm is not None

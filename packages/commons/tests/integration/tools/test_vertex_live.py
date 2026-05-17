@@ -85,7 +85,6 @@ async def test_vertex_openai_maas_completion_live() -> None:
 @pytest.mark.parametrize(
     "model",
     (
-        "deepseek-ai/DeepSeek-V3.1-TEE",
         "deepseek-ai/DeepSeek-V3.2-TEE",
         "zai-org/GLM-5-TEE",
     ),

@@ -9,11 +9,8 @@ from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequ
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
 
-DEEPSEEK_TOOL_MODELS = (
-    "deepseek-ai/DeepSeek-V3.1-TEE",
+CHUTES_TOOL_MODELS = (
     "deepseek-ai/DeepSeek-V3.2-TEE",
-)
-CHUTES_TOOL_MODELS = DEEPSEEK_TOOL_MODELS + (
     "zai-org/GLM-5-TEE",
     "Qwen/Qwen3.6-27B-TEE",
     "google/gemma-4-31B-turbo-TEE",

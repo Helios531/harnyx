@@ -15,7 +15,6 @@ from harnyx_commons.llm.provider_types import (
 ToolModelName = Literal[
     "openai/gpt-oss-20b",
     "openai/gpt-oss-120b",
-    "deepseek-ai/DeepSeek-V3.1-TEE",
     "deepseek-ai/DeepSeek-V3.2-TEE",
     "zai-org/GLM-5-TEE",
     "Qwen/Qwen3.6-27B-TEE",
@@ -31,7 +30,6 @@ ToolModelThinkingProvider = Literal["chutes", "vertex", "custom-openai-compatibl
 ALLOWED_TOOL_MODELS: tuple[ToolModelName, ...] = (
     "openai/gpt-oss-20b",
     "openai/gpt-oss-120b",
-    "deepseek-ai/DeepSeek-V3.1-TEE",
     "deepseek-ai/DeepSeek-V3.2-TEE",
     "zai-org/GLM-5-TEE",
     "Qwen/Qwen3.6-27B-TEE",
@@ -73,10 +71,6 @@ TOOL_MODEL_THINKING_CAPABILITIES: Mapping[
     ToolModelName,
     Mapping[ToolModelThinkingProvider, ToolModelThinkingCapability],
 ] = {
-    "deepseek-ai/DeepSeek-V3.1-TEE": {
-        "chutes": ToolModelThinkingCapability("chat_template_kwargs.thinking"),
-        "vertex": ToolModelThinkingCapability("chat_template_kwargs.thinking"),
-    },
     "deepseek-ai/DeepSeek-V3.2-TEE": {
         "chutes": ToolModelThinkingCapability("chat_template_kwargs.thinking"),
         "vertex": ToolModelThinkingCapability("chat_template_kwargs.thinking"),

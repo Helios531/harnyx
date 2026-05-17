@@ -150,7 +150,6 @@ Every hosted tool helper accepts an optional positive finite `timeout` in second
 |-------|----------------------------------|----------|----------|
 | `openai/gpt-oss-20b` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` when routed through OpenRouter | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
 | `openai/gpt-oss-120b` | Supported via OpenRouter `reasoning.enabled` / `reasoning.effort="none"` when routed through OpenRouter | Supported via OpenRouter `reasoning.effort` | Supported via OpenRouter `reasoning.max_tokens` |
-| `deepseek-ai/DeepSeek-V3.1-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
 | `deepseek-ai/DeepSeek-V3.2-TEE` | Supported via `chat_template_kwargs.thinking` | No verified knob; ignored | No verified knob; ignored |
 | `zai-org/GLM-5-TEE` | Supported via `chat_template_kwargs.enable_thinking` | No verified knob; ignored | No verified knob; ignored |
 | `Qwen/Qwen3.6-27B-TEE` | Supported via `chat_template_kwargs.enable_thinking` when routed through the custom OpenAI-compatible Qwen endpoint | No verified knob; ignored | No verified knob; ignored |

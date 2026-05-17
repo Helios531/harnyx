@@ -17,7 +17,6 @@ _DEFAULT_MODEL_ALIASES: Mapping[str, str] = {
     "bedrock:openai/gpt-oss-120b-TEE": "openai.gpt-oss-120b-1:0",
     "bedrock:MiniMaxAI/MiniMax-M2.5-TEE": "minimax.minimax-m2.5",
     "bedrock:moonshotai/Kimi-K2.5-TEE": "moonshotai.kimi-k2.5",
-    "vertex:deepseek-ai/DeepSeek-V3.1-TEE": "deepseek-ai/deepseek-v3.1-maas",
     "vertex:deepseek-ai/DeepSeek-V3.2-TEE": "deepseek-ai/deepseek-v3.2-maas",
     "vertex:openai/gpt-oss-20b": "publishers/openai/models/gpt-oss-20b-maas",
     "vertex:openai/gpt-oss-120b": "publishers/openai/models/gpt-oss-120b-maas",
