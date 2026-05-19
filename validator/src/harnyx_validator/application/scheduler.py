@@ -66,7 +66,7 @@ class SchedulerConfig:
     token_secret_bytes: int
     session_ttl: timedelta
     artifact_parallelism: int = 2
-    artifact_task_parallelism: int = 10
+    artifact_task_parallelism: int = 20
 
 
 @dataclass(frozen=True, slots=True)

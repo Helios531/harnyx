@@ -43,7 +43,7 @@ def test_settings_defaults_artifact_task_parallelism_to_external_default(monkeyp
 
     settings = Settings.load()
 
-    assert settings.artifact_task_parallelism == 10
+    assert settings.artifact_task_parallelism == 20
 
 
 def test_settings_accepts_artifact_task_parallelism_override(monkeypatch) -> None:

@@ -75,7 +75,7 @@ class Settings(BaseSettings):
 
     # --- Evaluation ---
     artifact_task_parallelism: int = Field(
-        default=10,
+        default=20,
         alias="VALIDATOR_TASK_PARALLELISM",
         ge=1,
     )
