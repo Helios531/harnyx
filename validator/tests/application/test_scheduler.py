@@ -4,7 +4,6 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Event
-from typing import cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -29,7 +28,11 @@ from harnyx_commons.domain.tool_usage import ToolUsageSummary
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.tool_models import parse_tool_model
-from harnyx_commons.miner_task_failure_policy import ValidatorLlmSpeedBaseline, ValidatorModelLlmBaseline
+from harnyx_commons.miner_task_failure_policy import (
+    TimeoutObservationEvidence,
+    ValidatorLlmSpeedBaseline,
+    ValidatorModelLlmBaseline,
+)
 from harnyx_commons.sandbox.manager import SandboxDeployment, SandboxManager
 from harnyx_validator.application.dto.evaluation import (
     MinerTaskRunSubmission,
@@ -199,6 +202,14 @@ def _llm_baseline(
                 legacy_total_tps=legacy_total_tps if legacy_total_tps is not None else tps,
             )
         }
+    )
+
+
+def _timeout_observation() -> TimeoutObservationEvidence:
+    return TimeoutObservationEvidence(
+        successful_llm_samples=(),
+        session_summary=ToolUsageSummary.zero(),
+        session_elapsed_ms=1000.0,
     )
 
 
@@ -568,6 +579,341 @@ async def test_scheduler_refills_artifact_slots_without_waiting_for_all_started_
     result = await run_task
 
     assert result.runs == (first_submission, second_submission, third_submission)
+
+
+async def test_scheduler_defers_timeout_unresolved_retry_until_queued_artifacts_run(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    task = _task("deferred retry")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=DummySandboxManager(),
+        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+        evaluation_records=DummyEvaluationRecordStore(),
+        receipt_log=DummyReceiptLog(),
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_parallelism=1,
+        ),
+    )
+    batch_id = uuid4()
+    first_artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    second_artifact = ScriptArtifactSpec(uid=8, artifact_id=uuid4(), content_hash="b", size_bytes=0)
+    first_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=first_artifact,
+        task=task,
+    )
+    second_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=second_artifact,
+        task=task,
+    )
+    pair_key = (first_artifact.artifact_id, task.task_id)
+    call_order: list[tuple[UUID, int]] = []
+    retry_snapshots: list[dict[tuple[UUID, UUID], scheduler_module.TimeoutRetryState]] = []
+
+    async def run_single_artifact(**kwargs):
+        artifact = kwargs["artifact"]
+        retry_round = kwargs["retry_round"]
+        call_order.append((artifact.artifact_id, retry_round))
+        if artifact.artifact_id == first_artifact.artifact_id and retry_round == 0:
+            return scheduler_module._CompletedArtifactResult(
+                artifact_id=artifact.artifact_id,
+                submissions=(),
+                unresolved_tasks=(task,),
+                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+                timeout_retry_state_by_pair={
+                    pair_key: scheduler_module.TimeoutRetryState((_timeout_observation(),))
+                },
+                retry_round=retry_round,
+            )
+        if artifact.artifact_id == first_artifact.artifact_id:
+            retry_snapshots.append(kwargs["timeout_retry_state_snapshot"])
+            return scheduler_module._CompletedArtifactResult(
+                artifact_id=artifact.artifact_id,
+                submissions=(first_submission,),
+                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+                timeout_retry_state_by_pair={},
+                retry_round=retry_round,
+            )
+        return scheduler_module._CompletedArtifactResult(
+            artifact_id=artifact.artifact_id,
+            submissions=(second_submission,),
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+            timeout_retry_state_by_pair={},
+        )
+
+    scheduler._run_single_artifact = run_single_artifact  # type: ignore[method-assign]
+
+    result = await scheduler.run(
+        batch_id=batch_id,
+        requested_artifacts=(first_artifact, second_artifact),
+    )
+
+    assert call_order == [
+        (first_artifact.artifact_id, 0),
+        (second_artifact.artifact_id, 0),
+        (first_artifact.artifact_id, 1),
+    ]
+    assert len(retry_snapshots[0][pair_key].prior_observations) == 1
+    assert result.runs == (first_submission, second_submission)
+
+
+async def test_scheduler_gates_retry_rounds_across_concurrent_artifact_workers(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    task = _task("round gate")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    scheduler = EvaluationScheduler(
+        tasks=(task,),
+        subtensor_client=subtensor,
+        sandbox_manager=DummySandboxManager(),
+        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+        evaluation_records=DummyEvaluationRecordStore(),
+        receipt_log=DummyReceiptLog(),
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_parallelism=2,
+        ),
+    )
+    batch_id = uuid4()
+    first_artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    second_artifact = ScriptArtifactSpec(uid=8, artifact_id=uuid4(), content_hash="b", size_bytes=0)
+    first_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=first_artifact,
+        task=task,
+    )
+    second_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=second_artifact,
+        task=task,
+    )
+    first_round0_done = asyncio.Event()
+    release_second_round0 = asyncio.Event()
+    second_round1_started = asyncio.Event()
+    release_second_round1 = asyncio.Event()
+    call_order: list[tuple[UUID, int]] = []
+
+    def retry_state_for(
+        artifact: ScriptArtifactSpec,
+        count: int,
+    ) -> dict[tuple[UUID, UUID], scheduler_module.TimeoutRetryState]:
+        return {
+            (artifact.artifact_id, task.task_id): scheduler_module.TimeoutRetryState(
+                tuple(_timeout_observation() for _ in range(count))
+            )
+        }
+
+    async def run_single_artifact(**kwargs):
+        artifact = kwargs["artifact"]
+        retry_round = kwargs["retry_round"]
+        call_order.append((artifact.artifact_id, retry_round))
+        if artifact.artifact_id == first_artifact.artifact_id and retry_round == 0:
+            first_round0_done.set()
+            return scheduler_module._CompletedArtifactResult(
+                artifact_id=artifact.artifact_id,
+                submissions=(),
+                unresolved_tasks=(task,),
+                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+                timeout_retry_state_by_pair=retry_state_for(first_artifact, 1),
+                retry_round=retry_round,
+            )
+        if artifact.artifact_id == second_artifact.artifact_id and retry_round == 0:
+            await release_second_round0.wait()
+            return scheduler_module._CompletedArtifactResult(
+                artifact_id=artifact.artifact_id,
+                submissions=(),
+                unresolved_tasks=(task,),
+                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+                timeout_retry_state_by_pair=retry_state_for(second_artifact, 1),
+                retry_round=retry_round,
+            )
+        if artifact.artifact_id == first_artifact.artifact_id and retry_round == 1:
+            return scheduler_module._CompletedArtifactResult(
+                artifact_id=artifact.artifact_id,
+                submissions=(),
+                unresolved_tasks=(task,),
+                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+                timeout_retry_state_by_pair=retry_state_for(first_artifact, 2),
+                retry_round=retry_round,
+            )
+        if artifact.artifact_id == second_artifact.artifact_id and retry_round == 1:
+            second_round1_started.set()
+            await release_second_round1.wait()
+            return scheduler_module._CompletedArtifactResult(
+                artifact_id=artifact.artifact_id,
+                submissions=(second_submission,),
+                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+                timeout_retry_state_by_pair={},
+                retry_round=retry_round,
+            )
+        return scheduler_module._CompletedArtifactResult(
+            artifact_id=artifact.artifact_id,
+            submissions=(first_submission,),
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+            timeout_retry_state_by_pair={},
+            retry_round=retry_round,
+        )
+
+    scheduler._run_single_artifact = run_single_artifact  # type: ignore[method-assign]
+
+    run_task = asyncio.create_task(
+        scheduler.run(
+            batch_id=batch_id,
+            requested_artifacts=(first_artifact, second_artifact),
+        )
+    )
+
+    await asyncio.wait_for(first_round0_done.wait(), timeout=1.0)
+    await asyncio.sleep(0)
+    assert (first_artifact.artifact_id, 1) not in call_order
+    release_second_round0.set()
+    await asyncio.wait_for(second_round1_started.wait(), timeout=1.0)
+    await asyncio.sleep(0)
+    assert (first_artifact.artifact_id, 2) not in call_order
+    release_second_round1.set()
+
+    result = await run_task
+
+    assert call_order.index((first_artifact.artifact_id, 2)) > call_order.index(
+        (second_artifact.artifact_id, 1)
+    )
+    assert result.runs == (first_submission, second_submission)
+
+
+async def test_scheduler_publishes_partial_submissions_before_deferred_retry(
+    blocking_executor: ThreadPoolExecutor,
+) -> None:
+    completed_task = _task("partial complete")
+    unresolved_task = _task("partial unresolved")
+    subtensor = FakeSubtensorClient()
+    subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
+    scheduler = EvaluationScheduler(
+        tasks=(completed_task, unresolved_task),
+        subtensor_client=subtensor,
+        sandbox_manager=DummySandboxManager(),
+        session_manager=SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry()),
+        evaluation_records=DummyEvaluationRecordStore(),
+        receipt_log=DummyReceiptLog(),
+        blocking_executor=blocking_executor,
+        orchestrator_factory=lambda _client: object(),
+        sandbox_options_factory=lambda artifact: {"uid": artifact.uid, "artifact_id": artifact.artifact_id},
+        clock=lambda: datetime(2025, 10, 27, tzinfo=UTC),
+        config=SchedulerConfig(
+            token_secret_bytes=8,
+            session_ttl=timedelta(minutes=5),
+            artifact_parallelism=1,
+        ),
+    )
+    batch_id = uuid4()
+    artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
+    blocking_artifact = ScriptArtifactSpec(uid=8, artifact_id=uuid4(), content_hash="b", size_bytes=0)
+    partial_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=completed_task,
+    )
+    final_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=artifact,
+        task=unresolved_task,
+    )
+    blocking_submission = _submission_for_task(
+        batch_id=batch_id,
+        validator_uid=41,
+        artifact=blocking_artifact,
+        task=completed_task,
+    )
+    seen_earlier_submissions: list[tuple[MinerTaskRunSubmission, ...]] = []
+    pair_key = (artifact.artifact_id, unresolved_task.task_id)
+
+    async def run_single_artifact(**kwargs):
+        run_artifact = kwargs["artifact"]
+        retry_round = kwargs["retry_round"]
+        if run_artifact.artifact_id == artifact.artifact_id and retry_round == 0:
+            return scheduler_module._CompletedArtifactResult(
+                artifact_id=run_artifact.artifact_id,
+                submissions=(partial_submission,),
+                unresolved_tasks=(unresolved_task,),
+                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+                timeout_retry_state_by_pair={
+                    pair_key: scheduler_module.TimeoutRetryState((_timeout_observation(),))
+                },
+                retry_round=retry_round,
+            )
+        if run_artifact.artifact_id == artifact.artifact_id:
+            seen_earlier_submissions.append(kwargs["earlier_submissions"])
+            return scheduler_module._CompletedArtifactResult(
+                artifact_id=run_artifact.artifact_id,
+                submissions=(partial_submission, final_submission),
+                validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+                timeout_retry_state_by_pair={},
+                retry_round=retry_round,
+            )
+        return scheduler_module._CompletedArtifactResult(
+            artifact_id=run_artifact.artifact_id,
+            submissions=(blocking_submission,),
+            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
+            timeout_retry_state_by_pair={},
+        )
+
+    scheduler._run_single_artifact = run_single_artifact  # type: ignore[method-assign]
+
+    result = await scheduler.run(
+        batch_id=batch_id,
+        requested_artifacts=(artifact, blocking_artifact),
+    )
+
+    assert seen_earlier_submissions == [(partial_submission,)]
+    assert result.runs == (partial_submission, final_submission, blocking_submission)
+
+
+async def test_scheduler_timeout_state_merge_is_owned_pair_monotonic() -> None:
+    first_artifact_id = uuid4()
+    second_artifact_id = uuid4()
+    task_id = uuid4()
+    first_pair = (first_artifact_id, task_id)
+    second_pair = (second_artifact_id, task_id)
+    target = {
+        second_pair: scheduler_module.TimeoutRetryState(
+            (_timeout_observation(), _timeout_observation())
+        )
+    }
+    updates = {
+        first_pair: scheduler_module.TimeoutRetryState((_timeout_observation(),)),
+        second_pair: scheduler_module.TimeoutRetryState((_timeout_observation(),)),
+    }
+
+    scheduler_module._merge_owned_timeout_states(
+        target=target,
+        updates=updates,
+        owned_pair_keys=frozenset({first_pair}),
+    )
+
+    assert len(target[first_pair].prior_observations) == 1
+    assert len(target[second_pair].prior_observations) == 2
 
 
 async def test_scheduler_stops_dequeuing_queued_artifacts_when_validator_failure_is_discovered(
@@ -2037,7 +2383,8 @@ async def test_scheduler_uses_successful_baseline_across_execution_for_timeout_i
 async def test_retry_round_preserves_earlier_completed_runs_when_later_round_aborts(
     blocking_executor: ThreadPoolExecutor,
 ) -> None:
-    task = _task("later failure")
+    earlier_task = _task("earlier success")
+    later_task = _task("later unresolved")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     sandbox_manager = DummySandboxManager()
@@ -2045,7 +2392,7 @@ async def test_retry_round_preserves_earlier_completed_runs_when_later_round_abo
     session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
     receipt_log = DummyReceiptLog()
     scheduler = EvaluationScheduler(
-        tasks=(task,),
+        tasks=(earlier_task, later_task),
         subtensor_client=subtensor,
         sandbox_manager=sandbox_manager,
         session_manager=session_manager,
@@ -2062,8 +2409,6 @@ async def test_retry_round_preserves_earlier_completed_runs_when_later_round_abo
         ),
     )
     batch_id = uuid4()
-    earlier_task = _task("earlier success")
-    later_task = _task("later unresolved")
     artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
     first_submission = _submission_for_task(
         batch_id=batch_id,
@@ -2102,13 +2447,9 @@ async def test_retry_round_preserves_earlier_completed_runs_when_later_round_abo
     scheduler._runner = _RetryWaveRunner()  # type: ignore[assignment]
 
     with pytest.raises(ValidatorBatchFailedError, match="later round failed") as exc_info:
-        await scheduler._evaluate_artifact_with_timeout_state(
+        await scheduler.run(
             batch_id=batch_id,
-            artifact=artifact,
-            tasks=(earlier_task, later_task),
-            orchestrator=cast(scheduler_module.TaskRunOrchestrator, object()),
-            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-            timeout_retry_state_by_pair={},
+            requested_artifacts=(artifact,),
         )
 
     exc = exc_info.value
@@ -2119,7 +2460,8 @@ async def test_retry_round_preserves_earlier_completed_runs_when_later_round_abo
 async def test_retry_round_passes_earlier_runs_back_to_runner_for_breaker_start(
     blocking_executor: ThreadPoolExecutor,
 ) -> None:
-    task = _task("later timeout")
+    earlier_task = _task("earlier breaker failure")
+    later_task = _task("later unresolved")
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     sandbox_manager = DummySandboxManager()
@@ -2127,7 +2469,7 @@ async def test_retry_round_passes_earlier_runs_back_to_runner_for_breaker_start(
     session_manager = SessionManager(InMemorySessionRegistry(), InMemoryTokenRegistry())
     receipt_log = DummyReceiptLog()
     scheduler = EvaluationScheduler(
-        tasks=(task,),
+        tasks=(earlier_task, later_task),
         subtensor_client=subtensor,
         sandbox_manager=sandbox_manager,
         session_manager=session_manager,
@@ -2144,8 +2486,6 @@ async def test_retry_round_passes_earlier_runs_back_to_runner_for_breaker_start(
         ),
     )
     batch_id = uuid4()
-    earlier_task = _task("earlier breaker failure")
-    later_task = _task("later unresolved")
     artifact = ScriptArtifactSpec(uid=7, artifact_id=uuid4(), content_hash="a", size_bytes=0)
     earlier_failure = _submission_for_task(
         batch_id=batch_id,
@@ -2178,18 +2518,14 @@ async def test_retry_round_passes_earlier_runs_back_to_runner_for_breaker_start(
 
     scheduler._runner = _RetryWaveRunner()  # type: ignore[assignment]
 
-    result = await scheduler._evaluate_artifact_with_timeout_state(
+    result = await scheduler.run(
         batch_id=batch_id,
-        artifact=artifact,
-        tasks=(earlier_task, later_task),
-        orchestrator=cast(scheduler_module.TaskRunOrchestrator, object()),
-        validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-        timeout_retry_state_by_pair={},
+        requested_artifacts=(artifact,),
     )
 
     assert seen_earlier_submissions[0] == ()
     assert seen_earlier_submissions[1] == (earlier_failure,)
-    assert result.submissions == (earlier_failure,)
+    assert result.runs == (earlier_failure,)
 
 
 async def test_scheduler_stops_after_conclusive_failure_outcome_without_running_later_artifacts(
@@ -2360,13 +2696,9 @@ async def test_scheduler_validator_batch_failure_keeps_single_owner_for_complete
     scheduler._runner = _SingleOwnerRunner()  # type: ignore[assignment]
 
     with pytest.raises(ValidatorBatchFailedError, match="shared sandbox failure") as exc_info:
-        await scheduler._evaluate_artifact_with_timeout_state(
+        await scheduler.run(
             batch_id=batch_id,
-            artifact=artifact,
-            tasks=(earlier_task, later_task),
-            orchestrator=cast(scheduler_module.TaskRunOrchestrator, object()),
-            validator_model_llm_baseline=ValidatorModelLlmBaseline.empty(),
-            timeout_retry_state_by_pair={},
+            requested_artifacts=(artifact,),
         )
 
     assert seen_earlier_submissions == [(), (earlier_submission,)]

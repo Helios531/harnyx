@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import Counter, defaultdict, deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
@@ -59,6 +60,90 @@ class TimeoutRetryState:
     prior_observations: tuple[TimeoutObservationEvidence, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _ArtifactWorkItem:
+    artifact_index: int
+    artifact: ScriptArtifactSpec
+    tasks: tuple[MinerTask, ...]
+    earlier_submissions: tuple[MinerTaskRunSubmission, ...] = ()
+    timeout_retry_state_by_pair: dict[tuple[UUID, UUID], TimeoutRetryState] = field(default_factory=dict)
+    retry_round: int = 0
+
+    @property
+    def owned_pair_keys(self) -> frozenset[tuple[UUID, UUID]]:
+        return frozenset((self.artifact.artifact_id, task.task_id) for task in self.tasks)
+
+
+class _ArtifactWorkCoordinator:
+    def __init__(self, normal_work: Sequence[_ArtifactWorkItem]) -> None:
+        self._normal_queue = deque(normal_work)
+        self._retry_queues_by_round: defaultdict[int, deque[_ArtifactWorkItem]] = defaultdict(deque)
+        self._active_normal_count = 0
+        self._active_retry_count_by_round: Counter[int] = Counter()
+        self._stopped = False
+        self._condition = asyncio.Condition()
+
+    async def next_work(self) -> _ArtifactWorkItem | None:
+        async with self._condition:
+            while True:
+                if self._stopped:
+                    return None
+                if self._normal_queue:
+                    self._active_normal_count += 1
+                    return self._normal_queue.popleft()
+                if self._active_normal_count:
+                    await self._condition.wait()
+                    continue
+                lowest_round = self._lowest_queued_retry_round()
+                if lowest_round is None:
+                    if not self._active_retry_count():
+                        return None
+                    await self._condition.wait()
+                    continue
+                if self._has_active_lower_retry_round(lowest_round):
+                    await self._condition.wait()
+                    continue
+                self._active_retry_count_by_round[lowest_round] += 1
+                return self._retry_queues_by_round[lowest_round].popleft()
+
+    async def requeue_retry(self, work_item: _ArtifactWorkItem) -> None:
+        async with self._condition:
+            self._retry_queues_by_round[work_item.retry_round].append(work_item)
+            self._condition.notify_all()
+
+    async def complete_work(self, work_item: _ArtifactWorkItem) -> None:
+        async with self._condition:
+            if work_item.retry_round == 0:
+                self._active_normal_count -= 1
+            else:
+                self._active_retry_count_by_round[work_item.retry_round] -= 1
+                if self._active_retry_count_by_round[work_item.retry_round] <= 0:
+                    del self._active_retry_count_by_round[work_item.retry_round]
+            self._condition.notify_all()
+
+    async def stop(self) -> None:
+        async with self._condition:
+            self._stopped = True
+            self._condition.notify_all()
+
+    def _lowest_queued_retry_round(self) -> int | None:
+        queued_rounds = (
+            retry_round
+            for retry_round, queue in self._retry_queues_by_round.items()
+            if queue
+        )
+        return min(queued_rounds, default=None)
+
+    def _has_active_lower_retry_round(self, retry_round: int) -> bool:
+        return any(
+            active_round < retry_round and count > 0
+            for active_round, count in self._active_retry_count_by_round.items()
+        )
+
+    def _active_retry_count(self) -> int:
+        return sum(self._active_retry_count_by_round.values())
+
+
 @dataclass(frozen=True)
 class SchedulerConfig:
     """Static configuration used for session issuance."""
@@ -75,6 +160,8 @@ class _CompletedArtifactResult:
     submissions: tuple[MinerTaskRunSubmission, ...]
     validator_model_llm_baseline: ValidatorModelLlmBaseline
     timeout_retry_state_by_pair: dict[tuple[UUID, UUID], TimeoutRetryState]
+    unresolved_tasks: tuple[MinerTask, ...] = ()
+    retry_round: int = 0
     validator_batch_failure: ValidatorBatchFailedError | None = None
 
 
@@ -106,6 +193,50 @@ def _count_submission_outcomes(
             continue
         failure_count += 1
     return success_count, failure_count
+
+
+def _copy_owned_timeout_states(
+    *,
+    dispatch_states: dict[tuple[UUID, UUID], TimeoutRetryState],
+    work_item_states: dict[tuple[UUID, UUID], TimeoutRetryState],
+    owned_pair_keys: frozenset[tuple[UUID, UUID]],
+) -> dict[tuple[UUID, UUID], TimeoutRetryState]:
+    timeout_states: dict[tuple[UUID, UUID], TimeoutRetryState] = {}
+    for pair_key in owned_pair_keys:
+        state = _newer_timeout_state(
+            dispatch_states.get(pair_key),
+            work_item_states.get(pair_key),
+        )
+        if state is None:
+            continue
+        timeout_states[pair_key] = TimeoutRetryState(prior_observations=state.prior_observations)
+    return timeout_states
+
+
+def _merge_owned_timeout_states(
+    *,
+    target: dict[tuple[UUID, UUID], TimeoutRetryState],
+    updates: dict[tuple[UUID, UUID], TimeoutRetryState],
+    owned_pair_keys: frozenset[tuple[UUID, UUID]],
+) -> None:
+    for pair_key in owned_pair_keys:
+        update = updates.get(pair_key)
+        if update is None:
+            target.pop(pair_key, None)
+            continue
+        current = target.get(pair_key)
+        target[pair_key] = _newer_timeout_state(current, update) or update
+
+
+def _newer_timeout_state(
+    left: TimeoutRetryState | None,
+    right: TimeoutRetryState | None,
+) -> TimeoutRetryState | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return right if len(right.prior_observations) > len(left.prior_observations) else left
 
 
 def _has_primary_artifact_outcome(
@@ -261,18 +392,24 @@ class EvaluationScheduler:
         dispatch = _BatchArtifactDispatchState(
             submissions_by_artifact_index=[None] * len(artifacts),
         )
-        pending_artifacts: asyncio.Queue[tuple[int, ScriptArtifactSpec]] = asyncio.Queue()
-        for artifact_index, artifact in enumerate(artifacts, start=1):
-            pending_artifacts.put_nowait((artifact_index, artifact))
+        work_coordinator = _ArtifactWorkCoordinator(
+            tuple(
+                _ArtifactWorkItem(
+                    artifact_index=artifact_index,
+                    artifact=artifact,
+                    tasks=tasks,
+                )
+                for artifact_index, artifact in enumerate(artifacts, start=1)
+            )
+        )
 
         workers = [
             asyncio.create_task(
                 self._run_artifact_worker(
                     batch_id=batch_id,
-                    tasks=tasks,
                     artifact_count=len(artifacts),
                     recorded_pairs=recorded_pairs,
-                    pending_artifacts=pending_artifacts,
+                    work_coordinator=work_coordinator,
                     dispatch=dispatch,
                     blocking_executor=blocking_executor,
                 )
@@ -303,51 +440,98 @@ class EvaluationScheduler:
         self,
         *,
         batch_id: UUID,
-        tasks: tuple[MinerTask, ...],
         artifact_count: int,
         recorded_pairs: frozenset[tuple[UUID, UUID]],
-        pending_artifacts: asyncio.Queue[tuple[int, ScriptArtifactSpec]],
+        work_coordinator: _ArtifactWorkCoordinator,
         dispatch: _BatchArtifactDispatchState,
         blocking_executor: Executor,
     ) -> None:
         while True:
+            work_item = await work_coordinator.next_work()
+            if work_item is None:
+                return
+
             async with dispatch.merge_lock:
                 if dispatch.stop_dequeuing or dispatch.published_batch_failure is not None:
-                    return
-                try:
-                    artifact_index, artifact = pending_artifacts.get_nowait()
-                except asyncio.QueueEmpty:
-                    return
-                timeout_retry_state_snapshot = {
-                    pair_key: TimeoutRetryState(prior_observations=state.prior_observations)
-                    for pair_key, state in dispatch.timeout_retry_state_by_pair.items()
-                }
+                    should_stop_coordinator = True
+                    retry_work_item = None
+                    timeout_retry_state_snapshot: dict[tuple[UUID, UUID], TimeoutRetryState] | None = None
+                else:
+                    should_stop_coordinator = False
+                    retry_work_item = None
+                    timeout_retry_state_snapshot = _copy_owned_timeout_states(
+                        dispatch_states=dispatch.timeout_retry_state_by_pair,
+                        work_item_states=work_item.timeout_retry_state_by_pair,
+                        owned_pair_keys=work_item.owned_pair_keys,
+                    )
+
+            if should_stop_coordinator:
+                await work_coordinator.stop()
+                await work_coordinator.complete_work(work_item)
+                return
+            if timeout_retry_state_snapshot is None:
+                await work_coordinator.complete_work(work_item)
+                return
 
             artifact_result = await self._run_single_artifact(
                 batch_id=batch_id,
-                artifact_index=artifact_index,
+                artifact_index=work_item.artifact_index,
                 artifact_count=artifact_count,
-                artifact=artifact,
-                tasks=tasks,
+                artifact=work_item.artifact,
+                tasks=work_item.tasks,
                 recorded_pairs=recorded_pairs,
                 blocking_executor=blocking_executor,
                 completed_artifact_baseline=lambda: dispatch.validator_model_llm_baseline,
                 timeout_retry_state_snapshot=timeout_retry_state_snapshot,
+                earlier_submissions=work_item.earlier_submissions,
+                retry_round=work_item.retry_round,
                 stop_dequeuing=lambda: self._stop_artifact_dequeue(dispatch),
             )
 
             async with dispatch.merge_lock:
-                dispatch.submissions_by_artifact_index[artifact_index - 1] = artifact_result.submissions
+                dispatch.submissions_by_artifact_index[work_item.artifact_index - 1] = artifact_result.submissions
                 dispatch.validator_model_llm_baseline = dispatch.validator_model_llm_baseline.merge(
                     artifact_result.validator_model_llm_baseline,
                 )
-                dispatch.timeout_retry_state_by_pair.update(artifact_result.timeout_retry_state_by_pair)
+                _merge_owned_timeout_states(
+                    target=dispatch.timeout_retry_state_by_pair,
+                    updates=artifact_result.timeout_retry_state_by_pair,
+                    owned_pair_keys=work_item.owned_pair_keys,
+                )
                 if artifact_result.validator_batch_failure is not None:
-                    dispatch.validator_batch_failures_by_artifact_index[artifact_index] = (
+                    dispatch.validator_batch_failures_by_artifact_index[work_item.artifact_index] = (
                         artifact_result.validator_batch_failure
                     )
                     if dispatch.published_batch_failure is None:
                         dispatch.published_batch_failure = artifact_result.validator_batch_failure
+                    dispatch.stop_dequeuing = True
+                    should_stop_coordinator = True
+                    retry_work_item = None
+                elif artifact_result.unresolved_tasks:
+                    retry_work_item = _ArtifactWorkItem(
+                        artifact_index=work_item.artifact_index,
+                        artifact=work_item.artifact,
+                        tasks=artifact_result.unresolved_tasks,
+                        earlier_submissions=artifact_result.submissions,
+                        timeout_retry_state_by_pair={
+                            pair_key: state
+                            for pair_key, state in artifact_result.timeout_retry_state_by_pair.items()
+                            if pair_key in work_item.owned_pair_keys
+                        },
+                        retry_round=work_item.retry_round + 1,
+                    )
+                    should_stop_coordinator = False
+                else:
+                    should_stop_coordinator = False
+                    retry_work_item = None
+
+            if should_stop_coordinator:
+                await work_coordinator.stop()
+            elif retry_work_item is not None:
+                await work_coordinator.requeue_retry(retry_work_item)
+            await work_coordinator.complete_work(work_item)
+            if should_stop_coordinator or retry_work_item is not None:
+                continue
 
     async def _evaluate_artifact_with_timeout_state(
         self,
@@ -359,42 +543,25 @@ class EvaluationScheduler:
         validator_model_llm_baseline: ValidatorModelLlmBaseline,
         completed_artifact_baseline: Callable[[], ValidatorModelLlmBaseline] | None = None,
         timeout_retry_state_by_pair: dict[tuple[UUID, UUID], TimeoutRetryState],
+        earlier_submissions: tuple[MinerTaskRunSubmission, ...] = (),
     ) -> ArtifactEvaluationOutcome:
-        artifact_result = ArtifactEvaluationOutcome(
-            submissions=(),
-            unresolved_tasks=tasks,
+        artifact_result = await self._runner.evaluate_artifact_with_state(
+            batch_id=batch_id,
+            artifact=artifact,
+            tasks=tasks,
+            orchestrator=orchestrator,
+            validator_model_llm_baseline=validator_model_llm_baseline,
+            completed_artifact_baseline=completed_artifact_baseline,
             timeout_observations_by_pair={
                 pair_key: state.prior_observations
                 for pair_key, state in timeout_retry_state_by_pair.items()
             },
-            validator_model_llm_baseline=validator_model_llm_baseline,
+            earlier_submissions=earlier_submissions,
         )
-        current_timeout_states = dict(timeout_retry_state_by_pair)
-        while artifact_result.unresolved_tasks:
-            artifact_result = await self._runner.evaluate_artifact_with_state(
-                batch_id=batch_id,
-                artifact=artifact,
-                tasks=artifact_result.unresolved_tasks,
-                orchestrator=orchestrator,
-                validator_model_llm_baseline=artifact_result.validator_model_llm_baseline,
-                completed_artifact_baseline=completed_artifact_baseline,
-                timeout_observations_by_pair={
-                    pair_key: state.prior_observations
-                    for pair_key, state in current_timeout_states.items()
-                },
-                earlier_submissions=artifact_result.submissions,
-            )
-            current_timeout_states = {
-                pair_key: TimeoutRetryState(prior_observations=observations)
-                for pair_key, observations in artifact_result.timeout_observations_by_pair.items()
-            }
         return ArtifactEvaluationOutcome(
             submissions=artifact_result.submissions,
-            unresolved_tasks=(),
-            timeout_observations_by_pair={
-                pair_key: state.prior_observations
-                for pair_key, state in current_timeout_states.items()
-            },
+            unresolved_tasks=artifact_result.unresolved_tasks,
+            timeout_observations_by_pair=artifact_result.timeout_observations_by_pair,
             validator_model_llm_baseline=artifact_result.validator_model_llm_baseline,
         )
 
@@ -410,6 +577,8 @@ class EvaluationScheduler:
         blocking_executor: Executor,
         completed_artifact_baseline: Callable[[], ValidatorModelLlmBaseline],
         timeout_retry_state_snapshot: dict[tuple[UUID, UUID], TimeoutRetryState],
+        earlier_submissions: tuple[MinerTaskRunSubmission, ...] = (),
+        retry_round: int = 0,
         stop_dequeuing: Callable[[], None] | None = None,
     ) -> _CompletedArtifactResult:
         remaining_tasks = tuple(
@@ -418,16 +587,17 @@ class EvaluationScheduler:
         if not remaining_tasks:
             return _CompletedArtifactResult(
                 artifact_id=artifact.artifact_id,
-                submissions=(),
+                submissions=earlier_submissions,
                 validator_model_llm_baseline=completed_artifact_baseline(),
                 timeout_retry_state_by_pair=timeout_retry_state_snapshot,
+                retry_round=retry_round,
             )
 
         artifact_started_at = time.monotonic()
         setup_ms = 0.0
         evaluation_ms = 0.0
         teardown_ms = 0.0
-        artifact_submissions: tuple[MinerTaskRunSubmission, ...] = ()
+        artifact_submissions: tuple[MinerTaskRunSubmission, ...] = earlier_submissions
         unresolved_count = len(remaining_tasks)
         outcome = "completed"
         error_code: str | None = None
@@ -473,28 +643,30 @@ class EvaluationScheduler:
                     stop_dequeuing()
                 return _CompletedArtifactResult(
                     artifact_id=artifact.artifact_id,
-                    submissions=(),
+                    submissions=earlier_submissions,
                     validator_model_llm_baseline=completed_artifact_baseline(),
                     timeout_retry_state_by_pair=timeout_retry_state_snapshot,
+                    retry_round=retry_round,
                     validator_batch_failure=self._conclusive_batch_failure_from_artifact_error(
                         artifact=artifact,
                         tasks=tasks,
-                        completed_submissions=(),
+                        completed_submissions=earlier_submissions,
                         failure=exc,
                         recorded_pairs=recorded_pairs,
                     ),
                 )
             try:
-                artifact_submissions = tuple(
-                    await self._record_artifact_failure(
+                artifact_submissions = (
+                    *earlier_submissions,
+                    *(await self._record_artifact_failure(
                         batch_id=batch_id,
                         artifact=artifact,
                         failure=exc,
-                    )
+                    )),
                 )
                 unresolved_count = 0
             except UnexpectedArtifactExecutionError as backfill_exc:
-                artifact_submissions = backfill_exc.completed_submissions
+                artifact_submissions = (*earlier_submissions, *backfill_exc.completed_submissions)
                 unresolved_count = len(backfill_exc.remaining_tasks)
                 success_count, failure_count = _count_submission_outcomes(artifact_submissions)
                 _log_artifact_execution_finished(
@@ -542,6 +714,7 @@ class EvaluationScheduler:
                 submissions=artifact_submissions,
                 validator_model_llm_baseline=completed_artifact_baseline(),
                 timeout_retry_state_by_pair=timeout_retry_state_snapshot,
+                retry_round=retry_round,
             )
 
         artifact_result: ArtifactEvaluationOutcome | None = None
@@ -558,6 +731,7 @@ class EvaluationScheduler:
                 validator_model_llm_baseline=completed_artifact_baseline(),
                 completed_artifact_baseline=completed_artifact_baseline,
                 timeout_retry_state_by_pair=timeout_retry_state_snapshot,
+                earlier_submissions=earlier_submissions,
             )
             evaluation_ms = _monotonic_elapsed_ms(
                 started_at=evaluation_started_at,
@@ -585,6 +759,7 @@ class EvaluationScheduler:
                 submissions=artifact_submissions,
                 validator_model_llm_baseline=completed_artifact_baseline(),
                 timeout_retry_state_by_pair=timeout_retry_state_snapshot,
+                retry_round=retry_round,
                 validator_batch_failure=ValidatorBatchFailedError(
                     error_code=exc.error_code,
                     message=str(exc),
@@ -688,6 +863,8 @@ class EvaluationScheduler:
                 pair_key: TimeoutRetryState(prior_observations=observations)
                 for pair_key, observations in artifact_result.timeout_observations_by_pair.items()
             },
+            unresolved_tasks=artifact_result.unresolved_tasks,
+            retry_round=retry_round,
         )
 
     def _stop_artifact_dequeue(self, dispatch: _BatchArtifactDispatchState) -> None:

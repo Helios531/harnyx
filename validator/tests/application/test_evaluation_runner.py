@@ -1176,6 +1176,7 @@ async def test_evaluation_runner_miner_timeout_without_successful_baseline_stays
     assert result.submissions == ()
     assert result.unresolved_tasks == (task,)
     assert len(result.timeout_observations_by_pair[pair_key]) == 1
+    # The runner only reports unresolved timeout evidence; scheduler owns retry timing.
     assert evaluation_store.records == []
     assert session_registry.get(orchestrator.session_ids[0]) is None
     assert tuple(receipt_log.for_session(orchestrator.session_ids[0])) == ()
