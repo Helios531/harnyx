@@ -562,6 +562,7 @@ def _serialize_resource_usage(
     return ValidatorResourceUsageResponse(
         captured_at=snapshot.captured_at.isoformat(),
         cpu_percent=snapshot.cpu_percent,
+        cpu_capacity_cores=snapshot.cpu_capacity_cores,
         memory_used_bytes=snapshot.memory_used_bytes,
         memory_total_bytes=snapshot.memory_total_bytes,
         memory_percent=snapshot.memory_percent,

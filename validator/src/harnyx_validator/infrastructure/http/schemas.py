@@ -394,6 +394,7 @@ class ValidatorResourceUsageResponse(BaseModel):
 
     captured_at: str = Field(min_length=1)
     cpu_percent: float = Field(ge=0.0)
+    cpu_capacity_cores: float = Field(gt=0.0)
     memory_used_bytes: int = Field(ge=0)
     memory_total_bytes: int = Field(ge=0)
     memory_percent: float = Field(ge=0.0)

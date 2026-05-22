@@ -132,6 +132,7 @@ class StubResourceUsageProvider:
         return ValidatorResourceUsageSnapshot(
             captured_at=datetime(2026, 3, 31, 6, 42, tzinfo=UTC),
             cpu_percent=12.5,
+            cpu_capacity_cores=4.0,
             memory_used_bytes=512,
             memory_total_bytes=2048,
             memory_percent=25.0,
@@ -341,6 +342,7 @@ def test_status_endpoint_awaits_auth_with_request_primitives() -> None:
     assert response.json()["resource_usage"] == {
         "captured_at": "2026-03-31T06:42:00+00:00",
         "cpu_percent": 12.5,
+        "cpu_capacity_cores": 4.0,
         "memory_used_bytes": 512,
         "memory_total_bytes": 2048,
         "memory_percent": 25.0,

@@ -331,7 +331,7 @@ Return one bounded restore page for the caller validator and batch.
 | `batch_id` | path | req | `string` (format: uuid) |
 | `snapshot_received_at` | query | req | `string` (format: date-time) |
 | `cursor` | query | opt | `integer` (default: 0) |
-| `limit` | query | opt | `integer` (default: 500) |
+| `limit` | query | opt | `integer` (default: 50) |
 
 **Responses**
 `200` Successful Response

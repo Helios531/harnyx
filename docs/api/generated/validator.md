@@ -220,6 +220,7 @@ Body: [ValidatorStatusResponse](#model-validatorstatusresponse)
 | `queued_batches` |  |  | opt | `integer` (default: 0) |
 | `resource_usage` |  |  | opt | [ValidatorResourceUsageResponse](#model-validatorresourceusageresponse) (nullable) |
 |  | `captured_at` |  | req | `string` |
+|  | `cpu_capacity_cores` |  | req | `number` |
 |  | `cpu_percent` |  | req | `number` |
 |  | `disk_percent` |  | req | `number` |
 |  | `disk_total_bytes` |  | req | `integer` |
@@ -3169,6 +3170,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | 1st level | 2nd level | 3rd level | Req | Notes |
 | --- | --- | --- | --- | --- |
 | `captured_at` |  |  | req | `string` |
+| `cpu_capacity_cores` |  |  | req | `number` |
 | `cpu_percent` |  |  | req | `number` |
 | `disk_percent` |  |  | req | `number` |
 | `disk_total_bytes` |  |  | req | `integer` |
@@ -3188,6 +3190,11 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
       "minLength": 1,
       "title": "Captured At",
       "type": "string"
+    },
+    "cpu_capacity_cores": {
+      "exclusiveMinimum": 0.0,
+      "title": "Cpu Capacity Cores",
+      "type": "number"
     },
     "cpu_percent": {
       "minimum": 0.0,
@@ -3228,6 +3235,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
   "required": [
     "captured_at",
     "cpu_percent",
+    "cpu_capacity_cores",
     "memory_used_bytes",
     "memory_total_bytes",
     "memory_percent",
@@ -3257,6 +3265,7 @@ Body: [HTTPValidationError](#model-httpvalidationerror)
 | `queued_batches` |  |  | opt | `integer` (default: 0) |
 | `resource_usage` |  |  | opt | [ValidatorResourceUsageResponse](#model-validatorresourceusageresponse) (nullable) |
 |  | `captured_at` |  | req | `string` |
+|  | `cpu_capacity_cores` |  | req | `number` |
 |  | `cpu_percent` |  | req | `number` |
 |  | `disk_percent` |  | req | `number` |
 |  | `disk_total_bytes` |  | req | `integer` |
