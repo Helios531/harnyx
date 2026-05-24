@@ -28,6 +28,7 @@ from harnyx_commons.llm.providers.bedrock_codec import (
     ThrottlingExceptionEvent,
     ValidationExceptionEvent,
 )
+from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import GroundedLlmRequest, LlmMessage, LlmMessageContentPart, LlmRequest, LlmTool
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -53,9 +54,12 @@ class _FakeEventStream:
 class _FakeClient:
     events: Sequence[dict[str, object]]
     calls: list[dict[str, object]]
+    failures: list[Exception]
 
     async def converse_stream(self, **kwargs: object) -> dict[str, object]:
         self.calls.append(dict(kwargs))
+        if self.failures:
+            raise self.failures.pop(0)
         return {
             "ResponseMetadata": {
                 "RequestId": "request-123",
@@ -90,9 +94,10 @@ def _patch_session(
     monkeypatch: pytest.MonkeyPatch,
     *,
     events: Sequence[dict[str, object]],
+    failures: Sequence[Exception] = (),
 ) -> tuple[_FakeSession, list[dict[str, object]]]:
     captured_calls: list[dict[str, object]] = []
-    client = _FakeClient(events=events, calls=captured_calls)
+    client = _FakeClient(events=events, calls=captured_calls, failures=list(failures))
     session = _FakeSession(client)
     monkeypatch.setattr("harnyx_commons.llm.providers.bedrock.get_session", lambda: session)
     return session, captured_calls
@@ -693,6 +698,43 @@ async def test_bedrock_provider_accepts_native_minimax_m2_5_model_id(monkeypatch
     assert response.raw_text == "56"
 
 
+async def test_bedrock_provider_retries_expired_signature_with_fresh_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expired_signature = ClientError(
+        error_response={
+            "Error": {
+                "Code": "InvalidSignatureException",
+                "Message": (
+                    "Signature expired: 20260523T072540Z is now earlier than "
+                    "20260523T072628Z (20260523T073128Z - 5 min.)"
+                ),
+            },
+            "ResponseMetadata": {
+                "HTTPStatusCode": 403,
+            },
+        },
+        operation_name="ConverseStream",
+    )
+    _, client_calls = _patch_session(
+        monkeypatch,
+        events=(
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "56"}}},
+            {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": {"inputTokens": 5, "outputTokens": 2, "totalTokens": 7}}},
+        ),
+        failures=(expired_signature,),
+    )
+    provider = _provider()
+    provider._retry_policy = RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0)
+
+    response = await provider.invoke(_base_request())
+
+    assert response.raw_text == "56"
+    assert len(client_calls) == 2
+
+
 def test_bedrock_provider_classifies_client_errors() -> None:
     exc = ClientError(
         error_response={
@@ -711,6 +753,56 @@ def test_bedrock_provider_classifies_client_errors() -> None:
 
     assert retryable is True
     assert reason == "client_error:ThrottlingException:429:slow down"
+
+
+def test_bedrock_provider_classifies_expired_signature_as_retryable() -> None:
+    exc = ClientError(
+        error_response={
+            "Error": {
+                "Code": "InvalidSignatureException",
+                "Message": (
+                    "Signature expired: 20260523T072540Z is now earlier than "
+                    "20260523T072628Z (20260523T073128Z - 5 min.)"
+                ),
+            },
+            "ResponseMetadata": {
+                "HTTPStatusCode": 403,
+            },
+        },
+        operation_name="ConverseStream",
+    )
+
+    retryable, reason = BedrockLlmProvider._classify_exception(exc)
+
+    assert retryable is True
+    assert reason == (
+        "client_error:InvalidSignatureException:403:"
+        "Signature expired: 20260523T072540Z is now earlier than "
+        "20260523T072628Z (20260523T073128Z - 5 min.)"
+    )
+
+
+def test_bedrock_provider_keeps_other_invalid_signature_errors_non_retryable() -> None:
+    exc = ClientError(
+        error_response={
+            "Error": {
+                "Code": "InvalidSignatureException",
+                "Message": "The request signature we calculated does not match the signature you provided.",
+            },
+            "ResponseMetadata": {
+                "HTTPStatusCode": 403,
+            },
+        },
+        operation_name="ConverseStream",
+    )
+
+    retryable, reason = BedrockLlmProvider._classify_exception(exc)
+
+    assert retryable is False
+    assert reason == (
+        "client_error:InvalidSignatureException:403:"
+        "The request signature we calculated does not match the signature you provided."
+    )
 
 
 def test_bedrock_provider_classifies_retryable_client_error_code_without_status() -> None:

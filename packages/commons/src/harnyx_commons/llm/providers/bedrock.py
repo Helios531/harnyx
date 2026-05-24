@@ -34,6 +34,8 @@ _RETRYABLE_ERROR_CODES = frozenset(
     }
 )
 _RETRYABLE_ERROR_CODE_KEYS = frozenset(code.lower() for code in _RETRYABLE_ERROR_CODES)
+_SIGNATURE_EXPIRED_ERROR_CODE = "InvalidSignatureException"
+_SIGNATURE_EXPIRED_MESSAGE_FRAGMENT = "Signature expired"
 
 
 class BedrockLlmProvider(BaseLlmProvider):
@@ -125,6 +127,7 @@ class BedrockLlmProvider(BaseLlmProvider):
             message = str(error.get("Message") or exc)
             retryable = (
                 code.lower() in _RETRYABLE_ERROR_CODE_KEYS
+                or _is_expired_signature_error(code=code, message=message)
                 or status == 429
                 or (isinstance(status, int) and status >= 500)
             )
@@ -184,6 +187,10 @@ def _build_client_config(
             "mode": "standard",
         },
     )
+
+
+def _is_expired_signature_error(*, code: str, message: str) -> bool:
+    return code == _SIGNATURE_EXPIRED_ERROR_CODE and _SIGNATURE_EXPIRED_MESSAGE_FRAGMENT in message
 
 
 __all__ = ["BedrockLlmProvider"]
