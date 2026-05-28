@@ -126,6 +126,15 @@ Classify observed failures into concrete categories and attach examples whenever
 - formatting mismatch
 - scoring mismatch
 - tool budget waste
+- relevant recall but incomplete answer
+- broad search without answer-bearing evidence
+- continued search after answer-required fields are present
+- official or primary source with wrong scope
+- false premise accepted as true
+- raw retrieval dump instead of synthesized answer
+- admitted answer-bearing evidence not synthesized into the final answer
+- model, timeout, or parallelism change tested without the same evidence ledger
+- timeout or budget change that masks a retrieval, evidence-binding, or synthesis failure
 - implementation bug
 
 The taxonomy is working memory. Update it in `.autoresearch/experiment-ledger.md` as new evidence arrives.
@@ -218,6 +227,38 @@ Verify:
 - Did it extract the needed evidence?
 - Did the final answer use that evidence?
 - Would the same mechanism apply to nearby questions?
+
+### Strategies that worked from batches (as of 2026/05/28)
+
+Recent completed-batch observations are experiment leads, not permanent miner rules. Revalidate them against fresh trace evidence from the pinned local-eval report, benchmark report, `run.log`, focused diagnostics, tool-call traces, diagnostic output you created, and `.autoresearch/experiment-ledger.md` before keeping any `train.py` change.
+
+A lower-scoring recall-first design may still have had upfront targets and stop conditions. The question to test is whether its answer-completeness and budget policy fired too late, admitted the wrong evidence, dropped admitted evidence before synthesis, or spent too much runtime expanding before final answer.
+
+When inspecting a weak case, separate two artifacts:
+
+1. **Search coverage:** the queries issued, search results returned, selected sources, and fetched pages.
+2. **Answer completeness:** the required facts, source scope, admitted evidence, missing facts, and final answer.
+
+The target is fast, cheap deep research under budget, not maximum retrieval. Search coverage is not answer completeness. New relevant search results are not necessarily necessary evidence. A final answer that dumps retrieved page text, navigation text, or unsynthesized snippets is still a synthesis failure even when the retrieved source is relevant. Broad or recall-first search is useful when it tests competing interpretations, missing required facts, source scopes, or contradictions. It becomes waste when the run keeps broadening query/source variants after the answer-required fields are already supportable and the remaining budget should go to synthesis.
+
+Before changing search breadth, source selection, evidence admission, synthesis, model choice, reasoning settings, timeout values, or parallelism, write the observable answer contract for the diagnostic case:
+
+- required facts or answer-required fields
+- likely traps: wrong entity, wrong date basis, wrong document type, false premise, outdated status, official-but-wrong-scope source
+- source basis the question requires: official filing, regulator notice, primary source, independent comparison source, or another specific surface
+- queries attempted and selected sources
+- admitted evidence and missing facts after evidence admission
+- final answer, cost, runtime, and score
+- what would stop retrieval and trigger synthesis
+- what would falsify the proposed change
+
+Use that contract to pick one mechanism to test. Good hypotheses include: required facts were not enumerated; queries missed a required field; selected sources were official but wrong-scope; evidence corrected a false premise but synthesis still answered the premise; final writing dropped admitted facts; model/call-count changes improved latency but hurt evidence admission; or the loop kept expanding after answer-required fields were already present.
+
+Stop expansion based on the answer contract, not a generic sense that research is "enough." Move to synthesis when every answer-required field has admitted supporting evidence, or when remaining missing fields are explicitly named and further broadening creates concrete timeout or cost risk. If a required field is still missing, run a targeted query for that field or answer that it could not be verified. Do not keep broadening query variants merely because more sources might exist.
+
+Treat official sources as high-value evidence, not automatic proof. Verify that the source matches the required entity, jurisdiction, date, document type, version, fiscal/calendar basis, population, metric, and claim scope. Nearby official evidence can support a refusal or false-premise correction, but it must not be stretched into an unsupported affirmative answer.
+
+Model, provider, reasoning setting, parallelism, call count, search breadth, and timeout choices are experiment variables. Larger, slower, or more numerous calls are not automatically better. Test them against diagnostics, score, cost, runtime, and failure modes. Do not preserve a setting merely because it appeared in a recent winning artifact.
 
 ### Do not abandon a hypothesis after one failed attempt
 
