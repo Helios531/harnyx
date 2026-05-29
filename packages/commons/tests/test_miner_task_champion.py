@@ -27,6 +27,7 @@ def test_selection_from_stored_champion_weights_reads_single_champion_score() ->
         final_top=(7,),
         weights={"7": 0.5},
         champion_artifact_id=artifact_id,
+        champion_hotkey_ss58="hotkey-7",
     )
 
     assert selection == ChampionSelection(
@@ -34,6 +35,7 @@ def test_selection_from_stored_champion_weights_reads_single_champion_score() ->
         weights={7: 1.0},
         score=0.5,
         champion_artifact_id=artifact_id,
+        champion_hotkey_ss58="hotkey-7",
     )
 
 
@@ -54,14 +56,33 @@ def test_selection_from_stored_champion_weights_keeps_legacy_split_weights_at_fu
 
 def test_select_batch_artifacts_keeps_incumbent_and_new_challengers() -> None:
     cutoff = datetime(2026, 4, 28, tzinfo=UTC)
-    incumbent = SubmittedArtifactInput(uid=1, artifact_id=uuid4(), submitted_at=cutoff - timedelta(days=1))
-    stale = SubmittedArtifactInput(uid=2, artifact_id=uuid4(), submitted_at=cutoff)
-    challenger = SubmittedArtifactInput(uid=3, artifact_id=uuid4(), submitted_at=cutoff + timedelta(seconds=1))
+    incumbent = SubmittedArtifactInput(
+        uid=1,
+        artifact_id=uuid4(),
+        submitted_at=cutoff - timedelta(days=1),
+        miner_hotkey_ss58="hotkey-1",
+    )
+    stale = SubmittedArtifactInput(
+        uid=2,
+        artifact_id=uuid4(),
+        submitted_at=cutoff,
+        miner_hotkey_ss58="hotkey-2",
+    )
+    challenger = SubmittedArtifactInput(
+        uid=3,
+        artifact_id=uuid4(),
+        submitted_at=cutoff + timedelta(seconds=1),
+        miner_hotkey_ss58="hotkey-3",
+    )
 
     selected = select_batch_artifacts(
-        latest_by_uid={1: incumbent, 2: stale, 3: challenger},
+        latest_by_hotkey={"hotkey-1": incumbent, "hotkey-2": stale, "hotkey-3": challenger},
         previous_completed_cutoff=cutoff,
-        current_champion=CurrentChampionInput(uid=1, artifact_id=incumbent.artifact_id),
+        current_champion=CurrentChampionInput(
+            uid=1,
+            artifact_id=incumbent.artifact_id,
+            miner_hotkey_ss58="hotkey-1",
+        ),
         incumbent=incumbent,
     )
 
@@ -70,13 +91,22 @@ def test_select_batch_artifacts_keeps_incumbent_and_new_challengers() -> None:
 
 def test_select_batch_artifacts_fails_when_incumbent_record_does_not_match_champion() -> None:
     cutoff = datetime(2026, 4, 28, tzinfo=UTC)
-    incumbent = SubmittedArtifactInput(uid=2, artifact_id=uuid4(), submitted_at=cutoff)
+    incumbent = SubmittedArtifactInput(
+        uid=2,
+        artifact_id=uuid4(),
+        submitted_at=cutoff,
+        miner_hotkey_ss58="hotkey-2",
+    )
 
-    with pytest.raises(RuntimeError, match="incumbent script uid mismatch"):
+    with pytest.raises(RuntimeError, match="incumbent script hotkey mismatch"):
         select_batch_artifacts(
-            latest_by_uid={2: incumbent},
+            latest_by_hotkey={"hotkey-2": incumbent},
             previous_completed_cutoff=cutoff,
-            current_champion=CurrentChampionInput(uid=1, artifact_id=incumbent.artifact_id),
+            current_champion=CurrentChampionInput(
+                uid=1,
+                artifact_id=incumbent.artifact_id,
+                miner_hotkey_ss58="hotkey-1",
+            ),
             incumbent=incumbent,
         )
 
@@ -103,7 +133,7 @@ def test_validate_champion_run_inputs_rejects_incomplete_validator_coverage() ->
     with pytest.raises(ValueError, match="validator has incomplete run coverage for batch"):
         validate_champion_run_inputs(
             task_ids=(task_a, task_b),
-            artifacts=(ChampionArtifactInput(artifact_id=artifact_id, uid=7),),
+            artifacts=(ChampionArtifactInput(artifact_id=artifact_id, uid=7, miner_hotkey_ss58="hotkey-7"),),
             runs=(ChampionRunInput(validator_id, artifact_id, task_a, 1.0, 0.1),),
         )
 
@@ -117,8 +147,8 @@ def test_select_champion_returns_winner_take_all_selection() -> None:
     selection = select_champion(
         task_ids=(task_id,),
         artifacts=(
-            ChampionArtifactInput(artifact_id=incumbent, uid=7),
-            ChampionArtifactInput(artifact_id=challenger, uid=8),
+            ChampionArtifactInput(artifact_id=incumbent, uid=7, miner_hotkey_ss58="hotkey-7"),
+            ChampionArtifactInput(artifact_id=challenger, uid=8, miner_hotkey_ss58="hotkey-8"),
         ),
         runs=(
             ChampionRunInput(validator_id, incumbent, task_id, 0.1, 1.0),
@@ -133,6 +163,7 @@ def test_select_champion_returns_winner_take_all_selection() -> None:
         weights={8: 1.0},
         score=1.0,
         champion_artifact_id=challenger,
+        champion_hotkey_ss58="hotkey-8",
     )
     assert selection is not None
     assert selection.incumbent_artifact_id == incumbent
@@ -151,9 +182,9 @@ def test_select_champion_similarity_candidates_walk_backward_through_dethrone_se
     selection = select_champion(
         task_ids=(task_id,),
         artifacts=(
-            ChampionArtifactInput(artifact_id=incumbent, uid=7),
-            ChampionArtifactInput(artifact_id=challenger_a, uid=8),
-            ChampionArtifactInput(artifact_id=challenger_b, uid=9),
+            ChampionArtifactInput(artifact_id=incumbent, uid=7, miner_hotkey_ss58="hotkey-7"),
+            ChampionArtifactInput(artifact_id=challenger_a, uid=8, miner_hotkey_ss58="hotkey-8"),
+            ChampionArtifactInput(artifact_id=challenger_b, uid=9, miner_hotkey_ss58="hotkey-9"),
         ),
         runs=(
             ChampionRunInput(validator_id, incumbent, task_id, 0.50, 10.0),
@@ -178,8 +209,8 @@ def test_select_champion_similarity_candidates_include_replacement_of_zero_incum
     selection = select_champion(
         task_ids=(task_id,),
         artifacts=(
-            ChampionArtifactInput(artifact_id=incumbent, uid=7),
-            ChampionArtifactInput(artifact_id=challenger, uid=8),
+            ChampionArtifactInput(artifact_id=incumbent, uid=7, miner_hotkey_ss58="hotkey-7"),
+            ChampionArtifactInput(artifact_id=challenger, uid=8, miner_hotkey_ss58="hotkey-8"),
         ),
         runs=(
             ChampionRunInput(validator_id, incumbent, task_id, 0.0, 1.0),

@@ -35,18 +35,21 @@ class SubmittedArtifactInput:
     uid: int
     artifact_id: UUID
     submitted_at: datetime
+    miner_hotkey_ss58: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class CurrentChampionInput:
     uid: int
     artifact_id: UUID
+    miner_hotkey_ss58: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ChampionArtifactInput:
     artifact_id: UUID
     uid: int
+    miner_hotkey_ss58: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +68,7 @@ class ChampionSelection:
     weights: dict[int, float]
     score: float = 1.0
     champion_artifact_id: UUID | None = None
+    champion_hotkey_ss58: str | None = None
     artifact_scores: dict[UUID, float] = field(default_factory=dict, compare=False)
     incumbent_artifact_id: UUID | None = field(default=None, compare=False)
     ranking_trace: RankingCascadeTrace | None = field(default=None, compare=False)
@@ -76,6 +80,7 @@ def selection_from_stored_champion_weights(
     final_top: Sequence[int],
     weights: Mapping[str, float],
     champion_artifact_id: UUID | None,
+    champion_hotkey_ss58: str | None = None,
 ) -> ChampionSelection:
     champion_uid = int(final_top[0]) if final_top else None
     if champion_uid is None:
@@ -84,18 +89,20 @@ def selection_from_stored_champion_weights(
             weights={},
             score=0.0,
             champion_artifact_id=champion_artifact_id,
+            champion_hotkey_ss58=champion_hotkey_ss58,
         )
     return ChampionSelection(
         champion_uid=champion_uid,
         weights=compose_champion_weights(champion_uid),
         score=_stored_champion_score(champion_uid=champion_uid, weights=weights),
         champion_artifact_id=champion_artifact_id,
+        champion_hotkey_ss58=champion_hotkey_ss58,
     )
 
 
 def select_batch_artifacts(
     *,
-    latest_by_uid: Mapping[int, SubmittedArtifactInput],
+    latest_by_hotkey: Mapping[str, SubmittedArtifactInput],
     previous_completed_cutoff: datetime,
     current_champion: CurrentChampionInput | None,
     incumbent: SubmittedArtifactInput | None,
@@ -106,9 +113,8 @@ def select_batch_artifacts(
     )
     challengers = tuple(
         record
-        for record in latest_by_uid.values()
-        if record.submitted_at > previous_completed_cutoff
-        and record.artifact_id not in incumbent_artifact_ids
+        for record in latest_by_hotkey.values()
+        if record.submitted_at > previous_completed_cutoff and record.artifact_id not in incumbent_artifact_ids
     )
     challengers_ordered = tuple(
         sorted(challengers, key=lambda record: (record.submitted_at, record.uid, str(record.artifact_id)))
@@ -141,7 +147,7 @@ def select_champion(
     current_champion_artifact_id: UUID | None,
     cascade: RankingCascade,
 ) -> ChampionSelection | None:
-    validated_runs, candidate_artifact_ids, artifact_uid_map = validate_champion_run_inputs(
+    validated_runs, candidate_artifact_ids, artifact_identity_map = validate_champion_run_inputs(
         task_ids=task_ids,
         artifacts=artifacts,
         runs=runs,
@@ -182,17 +188,18 @@ def select_champion(
             ranking_trace=ranking_trace,
         )
 
-    champion_uid = artifact_uid_map[champion_artifact_id]
+    champion_identity = artifact_identity_map[champion_artifact_id]
     artifact_scores = _artifact_scores(
         artifact_ids=candidate_artifact_ids,
         task_count=len(task_ids),
         aggregates=aggregates,
     )
     return ChampionSelection(
-        champion_uid=champion_uid,
-        weights=compose_champion_weights(champion_uid),
+        champion_uid=champion_identity.uid,
+        weights=compose_champion_weights(champion_identity.uid),
         score=artifact_scores[champion_artifact_id],
         champion_artifact_id=champion_artifact_id,
+        champion_hotkey_ss58=champion_identity.hotkey,
         artifact_scores=artifact_scores,
         incumbent_artifact_id=current_champion_artifact_id,
         ranking_trace=ranking_trace,
@@ -203,12 +210,18 @@ def select_champion(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _ArtifactIdentity:
+    uid: int
+    hotkey: str
+
+
 def validate_champion_run_inputs(
     *,
     task_ids: Sequence[UUID],
     artifacts: Sequence[ChampionArtifactInput],
     runs: Sequence[ChampionRunInput],
-) -> tuple[tuple[ChampionRunInput, ...], tuple[UUID, ...], dict[UUID, int]]:
+) -> tuple[tuple[ChampionRunInput, ...], tuple[UUID, ...], dict[UUID, _ArtifactIdentity]]:
     if not task_ids:
         raise ValueError("batch contains no tasks")
 
@@ -217,12 +230,16 @@ def validate_champion_run_inputs(
         raise ValueError("batch contains duplicate artifact ids")
 
     task_id_set = set(task_ids)
-    expected_pairs = {
-        (artifact_id, task_id)
-        for artifact_id, task_id in product(candidate_artifact_ids, task_id_set)
-    }
+    expected_pairs = {(artifact_id, task_id) for artifact_id, task_id in product(candidate_artifact_ids, task_id_set)}
 
-    artifact_uid_map = {artifact.artifact_id: artifact.uid for artifact in artifacts}
+    artifact_identity_map: dict[UUID, _ArtifactIdentity] = {}
+    for artifact in artifacts:
+        if artifact.miner_hotkey_ss58 is None:
+            raise ValueError(f"artifact missing miner hotkey: {artifact.artifact_id}")
+        artifact_identity_map[artifact.artifact_id] = _ArtifactIdentity(
+            uid=artifact.uid,
+            hotkey=artifact.miner_hotkey_ss58,
+        )
     records_by_validator: dict[UUID, list[ChampionRunInput]] = {}
     eligible_runs: list[ChampionRunInput] = []
     for run in runs:
@@ -231,7 +248,7 @@ def validate_champion_run_inputs(
     for validator_id, validator_runs in records_by_validator.items():
         seen_pairs: set[tuple[UUID, UUID]] = set()
         for run in validator_runs:
-            if run.artifact_id not in artifact_uid_map:
+            if run.artifact_id not in artifact_identity_map:
                 raise ValueError(f"run referenced artifact outside batch: {run.artifact_id}")
             if run.task_id not in task_id_set:
                 raise ValueError(f"run referenced task outside batch: {run.task_id}")
@@ -239,19 +256,17 @@ def validate_champion_run_inputs(
             pair = (run.artifact_id, run.task_id)
             if pair in seen_pairs:
                 raise ValueError(
-                    "duplicate run pair for validator "
-                    f"{validator_id}: artifact={run.artifact_id} task={run.task_id}"
+                    f"duplicate run pair for validator {validator_id}: artifact={run.artifact_id} task={run.task_id}"
                 )
             seen_pairs.add(pair)
         if seen_pairs != expected_pairs:
             missing_pairs = expected_pairs - seen_pairs
             raise ValueError(
-                "validator has incomplete run coverage for batch "
-                f"{validator_id}: missing_pairs={sorted(missing_pairs)}"
+                f"validator has incomplete run coverage for batch {validator_id}: missing_pairs={sorted(missing_pairs)}"
             )
         eligible_runs.extend(validator_runs)
 
-    return tuple(eligible_runs), candidate_artifact_ids, artifact_uid_map
+    return tuple(eligible_runs), candidate_artifact_ids, artifact_identity_map
 
 
 def _validated_incumbent(
@@ -263,9 +278,12 @@ def _validated_incumbent(
         return (), set()
     if incumbent is None:
         raise RuntimeError(f"incumbent script missing for cutoff: {current_champion.artifact_id}")
-    if incumbent.uid != current_champion.uid:
+    if current_champion.miner_hotkey_ss58 is None:
+        raise RuntimeError("current champion missing miner hotkey")
+    if incumbent.miner_hotkey_ss58 != current_champion.miner_hotkey_ss58:
         raise RuntimeError(
-            f"incumbent script uid mismatch: champion uid={current_champion.uid} script uid={incumbent.uid}"
+            "incumbent script hotkey mismatch: "
+            f"champion hotkey={current_champion.miner_hotkey_ss58} script hotkey={incumbent.miner_hotkey_ss58}"
         )
     if incumbent.artifact_id != current_champion.artifact_id:
         raise RuntimeError(
