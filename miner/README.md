@@ -16,6 +16,7 @@ This directory contains the miner-facing CLI tools for the Harnyx Subnet.
   │  • harnyx-miner-local-eval  (batch eval) │
   │  • harnyx-miner-local-benchmark          │
   │  • harnyx-miner-submit      (upload)     │
+  │  • harnyx-miner-config      (credentials)│
   └──────────────────────────────────────────┘
                 │
                 │ submits script to platform
@@ -34,7 +35,7 @@ This directory contains the miner-facing CLI tools for the Harnyx Subnet.
 
 **What each directory is:**
 
-- `miner/` — CLI tools you use directly (`harnyx-miner-dev`, `harnyx-miner-local-eval`, `harnyx-miner-submit`)
+- `miner/` — CLI tools you use directly (`harnyx-miner-dev`, `harnyx-miner-local-eval`, `harnyx-miner-local-benchmark`, `harnyx-miner-submit`, `harnyx-miner-config`)
 - [`packages/miner-sdk/`](../packages/miner-sdk/README.md) — SDK your script imports; you don't need to read its docs first
 - `sandbox/` — runtime that validators use to execute your script; you don't run it directly
 
@@ -64,6 +65,19 @@ Create a `.env` at the repo root (copy from `.env.example`) and fill:
 
 The checked-in default is `SEARCH_PROVIDER=desearch`. If you need a fallback search provider, miner tooling also supports `parallel`; set `SEARCH_PROVIDER=parallel` and `PARALLEL_API_KEY`.
 If you set `BENCHMARK_LLM_PROVIDER=vertex`, also configure Vertex credentials such as `GCP_PROJECT_ID` and `GCP_LOCATION`.
+
+#### Provider credentials on the platform
+
+Use `harnyx-miner-config` to manage provider API keys stored by the platform for your signing hotkey:
+
+```bash
+harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --get
+harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --provider chutes --api-key <provider-api-key>
+harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --delete-provider chutes
+```
+
+Supported providers are `chutes`, `openrouter`, `desearch`, and `parallel`.
+Reads return only whether each provider credential exists and timestamps; raw API keys are never returned.
 
 ---
 

@@ -6,6 +6,10 @@ Generated from FastAPI OpenAPI.
 - [feeds](#feeds)
   - [POST /v1/feeds/search](#endpoint-post-v1-feeds-search)
   - [POST /v1/feeds/{feed_id}/tool/search](#endpoint-post-v1-feeds-feed_id-tool-search)
+- [miner-config](#miner-config)
+  - [GET /v1/miner-config](#endpoint-get-v1-miner-config)
+  - [PUT /v1/miner-config](#endpoint-put-v1-miner-config)
+  - [DELETE /v1/miner-config](#endpoint-delete-v1-miner-config)
 - [miner-task-batches](#miner-task-batches)
   - [POST /v1/miner-task-batches/batch](#endpoint-post-v1-miner-task-batches-batch)
   - [GET /v1/miner-task-batches/batch/{batch_id}](#endpoint-get-v1-miner-task-batches-batch-batch_id)
@@ -126,6 +130,105 @@ Body: array[[_RepoSimpleSearchHit](#model-_reposimplesearchhit)]
 | --- | --- | --- | --- | --- |
 | `snippet` |  |  | req | `string` |
 | `uri` |  |  | req | `string` |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+
+## miner-config
+
+<a id="endpoint-get-v1-miner-config"></a>
+### GET /v1/miner-config
+
+Read redacted miner provider credential status.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [MinerConfigResponse](#model-minerconfigresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `miner_hotkey_ss58` |  |  | req | `string` |
+| `provider_credentials` |  |  | req | `object` |
+| `uid` |  |  | req | `integer` (nullable) |
+
+
+<a id="endpoint-put-v1-miner-config"></a>
+### PUT /v1/miner-config
+
+Create or update one miner provider credential.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Request**
+Content-Type: `application/json`
+Body: [MinerConfigPutRequest](#model-minerconfigputrequest)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `key` |  |  | req | `string` |
+| `value` |  |  | req | `string` |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [MinerConfigResponse](#model-minerconfigresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `miner_hotkey_ss58` |  |  | req | `string` |
+| `provider_credentials` |  |  | req | `object` |
+| `uid` |  |  | req | `integer` (nullable) |
+
+`422` Validation Error
+Content-Type: `application/json`
+Body: [HTTPValidationError](#model-httpvalidationerror)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `detail` |  |  | opt | array[[ValidationError](#model-validationerror)] |
+|  | `loc` |  | req | array[anyOf: `string` OR `integer`] |
+|  | `msg` |  | req | `string` |
+|  | `type` |  | req | `string` |
+
+
+<a id="endpoint-delete-v1-miner-config"></a>
+### DELETE /v1/miner-config
+
+Delete one miner provider credential.
+
+**Auth**: Bittensor-signed (`Authorization: Bittensor ss58="...",sig="..."`)
+
+**Request**
+Content-Type: `application/json`
+Body: [MinerConfigDeleteRequest](#model-minerconfigdeleterequest)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `key` |  |  | req | `string` |
+
+**Responses**
+`200` Successful Response
+Content-Type: `application/json`
+Body: [MinerConfigResponse](#model-minerconfigresponse)
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `miner_hotkey_ss58` |  |  | req | `string` |
+| `provider_credentials` |  |  | req | `object` |
+| `uid` |  |  | req | `integer` (nullable) |
 
 `422` Validation Error
 Content-Type: `application/json`
@@ -2076,6 +2179,184 @@ Body: [WeightsResponse](#model-weightsresponse)
     }
   },
   "title": "LlmUsageTotals",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minerconfigdeleterequest"></a>
+### Model: MinerConfigDeleteRequest
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `key` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "key": {
+      "title": "Key",
+      "type": "string"
+    }
+  },
+  "required": [
+    "key"
+  ],
+  "title": "MinerConfigDeleteRequest",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minerconfigputrequest"></a>
+### Model: MinerConfigPutRequest
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `key` |  |  | req | `string` |
+| `value` |  |  | req | `string` |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "key": {
+      "title": "Key",
+      "type": "string"
+    },
+    "value": {
+      "title": "Value",
+      "type": "string"
+    }
+  },
+  "required": [
+    "key",
+    "value"
+  ],
+  "title": "MinerConfigPutRequest",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minerconfigresponse"></a>
+### Model: MinerConfigResponse
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `miner_hotkey_ss58` |  |  | req | `string` |
+| `provider_credentials` |  |  | req | `object` |
+| `uid` |  |  | req | `integer` (nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "miner_hotkey_ss58": {
+      "title": "Miner Hotkey Ss58",
+      "type": "string"
+    },
+    "provider_credentials": {
+      "additionalProperties": {
+        "$ref": "#/components/schemas/MinerProviderCredentialStatusModel"
+      },
+      "title": "Provider Credentials",
+      "type": "object"
+    },
+    "uid": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Uid"
+    }
+  },
+  "required": [
+    "miner_hotkey_ss58",
+    "uid",
+    "provider_credentials"
+  ],
+  "title": "MinerConfigResponse",
+  "type": "object"
+}
+```
+
+</details>
+
+<a id="model-minerprovidercredentialstatusmodel"></a>
+### Model: MinerProviderCredentialStatusModel
+
+| 1st level | 2nd level | 3rd level | Req | Notes |
+| --- | --- | --- | --- | --- |
+| `created_at` |  |  | req | `string` (format: date-time; nullable) |
+| `exists` |  |  | req | `boolean` |
+| `provider` |  |  | req | `string` |
+| `updated_at` |  |  | req | `string` (format: date-time; nullable) |
+
+<details>
+<summary>JSON schema</summary>
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Created At"
+    },
+    "exists": {
+      "title": "Exists",
+      "type": "boolean"
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    },
+    "updated_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Updated At"
+    }
+  },
+  "required": [
+    "provider",
+    "exists",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "MinerProviderCredentialStatusModel",
   "type": "object"
 }
 ```

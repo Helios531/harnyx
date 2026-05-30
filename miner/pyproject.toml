@@ -22,6 +22,7 @@ harnyx-miner-hash = "harnyx_miner.hash:main"
 harnyx-miner-local-eval = "harnyx_miner.local_eval:main"
 harnyx-miner-local-benchmark = "harnyx_miner.local_benchmark:main"
 harnyx-miner-submit = "harnyx_miner.submit:main"
+harnyx-miner-config = "harnyx_miner.miner_config:main"
 
 [project.optional-dependencies]
 dev = [
