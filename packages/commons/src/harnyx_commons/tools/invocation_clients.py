@@ -6,9 +6,11 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from pydantic import SecretStr
+
 from harnyx_commons.clients import DESEARCH, PARALLEL
 from harnyx_commons.config.bedrock import BedrockSettings
-from harnyx_commons.config.llm import LlmSettings
+from harnyx_commons.config.llm import LlmSettings, SearchProviderName, parse_search_provider_name
 from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_factory import (
@@ -115,6 +117,33 @@ def build_web_search_provider(llm_settings: LlmSettings) -> WebSearchProviderPor
     raise ValueError(f"unsupported search provider: {provider}")
 
 
+def build_miner_paid_web_search_provider(
+    *,
+    provider: SearchProviderName | str,
+    api_key: SecretStr | str,
+    llm_settings: LlmSettings,
+) -> WebSearchProviderPort:
+    """Build an uncached miner-paid search provider from an explicit miner credential."""
+
+    provider_name = parse_search_provider_name(provider)
+    explicit_key = _explicit_api_key_value(api_key, provider=provider_name)
+    if provider_name == "desearch":
+        return DeSearchClient(
+            base_url=DESEARCH.base_url,
+            api_key=explicit_key,
+            timeout=DESEARCH.timeout_seconds,
+            max_concurrent=None,
+        )
+    if provider_name == "parallel":
+        return ParallelClient(
+            base_url=llm_settings.parallel_base_url,
+            api_key=explicit_key,
+            timeout=PARALLEL.timeout_seconds,
+            max_concurrent=None,
+        )
+    raise AssertionError(f"unsupported parsed miner-paid search provider: {provider_name}")
+
+
 def _build_optional_search_client(
     llm_settings: LlmSettings,
     *,
@@ -128,6 +157,14 @@ def _build_optional_search_client(
     if not lazy:
         return build_web_search_provider(llm_settings)
     return LazySearchProvider(lambda: build_web_search_provider(llm_settings))
+
+
+def _explicit_api_key_value(api_key: SecretStr | str, *, provider: str) -> str:
+    value = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{provider} miner-paid API key must be provided")
+    return normalized
 
 
 class LazyLlmProvider(LlmProviderPort):
@@ -196,6 +233,7 @@ __all__ = [
     "LazyLlmProvider",
     "LazySearchProvider",
     "ToolInvocationClients",
+    "build_miner_paid_web_search_provider",
     "build_optional_tool_llm_provider",
     "build_tool_invocation_clients",
     "build_tool_llm_provider",

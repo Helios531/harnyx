@@ -78,6 +78,7 @@ harnyx-miner-config --wallet-name <wallet> --hotkey-name <hotkey> --delete-provi
 
 Supported providers are `chutes`, `openrouter`, `desearch`, and `parallel`.
 Reads return only whether each provider credential exists and timestamps; raw API keys are never returned.
+Stored provider credentials are pre-registration state. Active miner-task batch execution does not use these credentials until a later release enables provider-access execution.
 
 ---
 

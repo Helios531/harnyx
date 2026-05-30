@@ -187,6 +187,148 @@ def test_tool_invocation_clients_can_require_search_provider() -> None:
         )
 
 
+def test_internal_search_provider_keeps_configured_desearch_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _FakeDeSearchClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.append(kwargs)
+
+    monkeypatch.setattr(invocation_clients, "DeSearchClient", _FakeDeSearchClient)
+
+    provider = invocation_clients.build_web_search_provider(
+        LlmSettings.model_construct(
+            search_provider="desearch",
+            desearch_api_key=SecretStr("operator-desearch-key"),
+            desearch_max_concurrent=7,
+        )
+    )
+
+    assert provider is not None
+    assert captured == [
+        {
+            "base_url": invocation_clients.DESEARCH.base_url,
+            "api_key": "operator-desearch-key",
+            "timeout": invocation_clients.DESEARCH.timeout_seconds,
+            "max_concurrent": 7,
+        }
+    ]
+
+
+def test_internal_search_provider_keeps_configured_parallel_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _FakeParallelClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.append(kwargs)
+
+    monkeypatch.setattr(invocation_clients, "ParallelClient", _FakeParallelClient)
+
+    provider = invocation_clients.build_web_search_provider(
+        LlmSettings.model_construct(
+            search_provider="parallel",
+            parallel_api_key=SecretStr("operator-parallel-key"),
+            parallel_base_url="https://parallel.example",
+            parallel_max_concurrent=11,
+        )
+    )
+
+    assert provider is not None
+    assert captured == [
+        {
+            "base_url": "https://parallel.example",
+            "api_key": "operator-parallel-key",
+            "timeout": invocation_clients.PARALLEL.timeout_seconds,
+            "max_concurrent": 11,
+        }
+    ]
+
+
+def test_miner_paid_desearch_provider_uses_explicit_key_without_shared_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _FakeDeSearchClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.append(kwargs)
+
+    monkeypatch.setattr(invocation_clients, "DeSearchClient", _FakeDeSearchClient)
+
+    provider = invocation_clients.build_miner_paid_web_search_provider(
+        provider="desearch",
+        api_key=SecretStr("miner-desearch-key"),
+        llm_settings=LlmSettings.model_construct(
+            desearch_api_key=SecretStr("operator-desearch-key"),
+            desearch_max_concurrent=7,
+        ),
+    )
+
+    assert provider is not None
+    assert captured == [
+        {
+            "base_url": invocation_clients.DESEARCH.base_url,
+            "api_key": "miner-desearch-key",
+            "timeout": invocation_clients.DESEARCH.timeout_seconds,
+            "max_concurrent": None,
+        }
+    ]
+
+
+def test_miner_paid_parallel_provider_uses_explicit_key_without_shared_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _FakeParallelClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.append(kwargs)
+
+    monkeypatch.setattr(invocation_clients, "ParallelClient", _FakeParallelClient)
+
+    provider = invocation_clients.build_miner_paid_web_search_provider(
+        provider="parallel",
+        api_key=SecretStr("miner-parallel-key"),
+        llm_settings=LlmSettings.model_construct(
+            parallel_api_key=SecretStr("operator-parallel-key"),
+            parallel_base_url="https://parallel.example",
+            parallel_max_concurrent=11,
+        ),
+    )
+
+    assert provider is not None
+    assert captured == [
+        {
+            "base_url": "https://parallel.example",
+            "api_key": "miner-parallel-key",
+            "timeout": invocation_clients.PARALLEL.timeout_seconds,
+            "max_concurrent": None,
+        }
+    ]
+
+
+def test_miner_paid_web_search_provider_rejects_blank_key() -> None:
+    with pytest.raises(ValueError, match="miner-paid API key must be provided"):
+        invocation_clients.build_miner_paid_web_search_provider(
+            provider="desearch",
+            api_key="   ",
+            llm_settings=LlmSettings.model_construct(),
+        )
+
+
+def test_miner_paid_web_search_provider_rejects_unknown_provider() -> None:
+    with pytest.raises(ValueError, match="search provider"):
+        invocation_clients.build_miner_paid_web_search_provider(
+            provider="unknown",
+            api_key="miner-key",
+            llm_settings=LlmSettings.model_construct(),
+        )
+
+
 @pytest.mark.anyio("asyncio")
 async def test_tool_invocation_clients_route_tool_model_to_custom_endpoint(
     monkeypatch: pytest.MonkeyPatch,

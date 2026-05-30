@@ -5,6 +5,7 @@ import pytest
 from harnyx_commons.clients import PARALLEL
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.llm.pricing import price_parallel_extract, price_parallel_search
+from harnyx_commons.tools.invocation_clients import build_miner_paid_web_search_provider
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.search_models import FetchPageRequest, SearchAiSearchRequest, SearchWebSearchRequest
 
@@ -57,5 +58,25 @@ async def test_parallel_fetch_page_live() -> None:
         assert response.data[0].url == "https://example.com"
         assert response.data[0].content
         assert price_parallel_extract(url_count=1) == pytest.approx(0.001)
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.expensive
+async def test_miner_paid_parallel_helper_search_ai_live() -> None:
+    settings = LlmSettings()
+    assert settings.parallel_api_key_value, "PARALLEL_API_KEY must be set"
+    client = build_miner_paid_web_search_provider(
+        provider="parallel",
+        api_key=settings.parallel_api_key,
+        llm_settings=settings,
+    )
+    try:
+        request = SearchAiSearchRequest(
+            prompt="Find the official Python documentation homepage",
+            count=10,
+        )
+        response = await client.search_ai(request)
+        assert isinstance(response.data, list)
     finally:
         await client.aclose()

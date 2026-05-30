@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from pydantic import SecretStr
+
 from harnyx_commons.clients import CHUTES
 from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings
@@ -22,6 +24,7 @@ from harnyx_commons.llm.providers.openai_compatible import OpenAiCompatibleLlmPr
 from harnyx_commons.llm.providers.openrouter import OpenRouterLlmProvider
 from harnyx_commons.llm.providers.vertex.provider import VertexLlmProvider
 from harnyx_commons.llm.routing import LlmRouteSurface, RoutedLlmProvider
+from harnyx_commons.llm.tool_models import MinerSelectedLlmProviderName, parse_miner_selected_llm_provider
 
 
 class CachedLlmProviderRegistry:
@@ -110,6 +113,37 @@ def build_routed_llm_provider(
     )
 
 
+def build_miner_paid_llm_provider(
+    *,
+    provider: MinerSelectedLlmProviderName | str,
+    api_key: SecretStr | str,
+    llm_settings: LlmSettings,
+) -> LlmProviderPort:
+    """Build an uncached miner-paid LLM provider from an explicit miner credential."""
+
+    provider_name = parse_miner_selected_llm_provider(provider)
+    explicit_key = _explicit_api_key_value(api_key, provider=provider_name)
+    if provider_name == "chutes":
+        return LlmProviderAdapter(
+            provider_name=provider_name,
+            delegate=ChutesLlmProvider(
+                base_url=CHUTES.base_url,
+                api_key=explicit_key,
+                timeout=CHUTES.timeout_seconds,
+                max_concurrent=None,
+            ),
+        )
+    if provider_name == "openrouter":
+        return LlmProviderAdapter(
+            provider_name=provider_name,
+            delegate=OpenRouterLlmProvider(
+                openrouter_api_key=SecretStr(explicit_key),
+                model_provider_options=llm_settings.openrouter_model_provider_options,
+            ),
+        )
+    raise AssertionError(f"unsupported parsed miner-paid llm provider: {provider_name}")
+
+
 def _build_provider(
     *,
     route_target: str,
@@ -184,6 +218,14 @@ def _parse_registry_route_target(raw: str | None) -> str:
     return parse_provider_route_target(raw, component="shared")
 
 
+def _explicit_api_key_value(api_key: SecretStr | str, *, provider: str) -> str:
+    value = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{provider} miner-paid API key must be provided")
+    return normalized
+
+
 def _max_concurrent_for_provider(
     provider_name: LlmProviderName,
     llm_settings: LlmSettings,
@@ -201,5 +243,6 @@ __all__ = [
     "CachedLlmProviderRegistry",
     "build_cached_llm_provider_registry",
     "build_cached_llm_provider_resolver",
+    "build_miner_paid_llm_provider",
     "build_routed_llm_provider",
 ]

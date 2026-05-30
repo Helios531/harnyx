@@ -4,6 +4,7 @@ import pytest
 
 from harnyx_commons.clients import CHUTES
 from harnyx_commons.config.llm import LlmSettings
+from harnyx_commons.llm.provider_factory import build_miner_paid_llm_provider
 from harnyx_commons.llm.providers.chutes import ChutesLlmProvider
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest
 
@@ -25,15 +26,8 @@ def _provider_settings() -> tuple[str, float]:
     return api_key, timeout
 
 
-@pytest.mark.parametrize("model", CHUTES_TOOL_MODELS)
-async def test_chutes_tool_model_completion_live(model: str) -> None:
-    api_key, timeout = _provider_settings()
-    provider = ChutesLlmProvider(
-        base_url=CHUTES.base_url,
-        api_key=api_key,
-        timeout=timeout,
-    )
-    request = LlmRequest(
+def _completion_request(*, model: str) -> LlmRequest:
+    return LlmRequest(
         provider="chutes",
         model=model,
         messages=(
@@ -47,8 +41,35 @@ async def test_chutes_tool_model_completion_live(model: str) -> None:
         timeout_seconds=180.0,
     )
 
+
+@pytest.mark.parametrize("model", CHUTES_TOOL_MODELS)
+async def test_chutes_tool_model_completion_live(model: str) -> None:
+    api_key, timeout = _provider_settings()
+    provider = ChutesLlmProvider(
+        base_url=CHUTES.base_url,
+        api_key=api_key,
+        timeout=timeout,
+    )
+    request = _completion_request(model=model)
+
     try:
         response = await provider.invoke(request)
+    finally:
+        await provider.aclose()
+
+    assert response.raw_text
+
+
+async def test_miner_paid_chutes_helper_completion_live() -> None:
+    settings = LlmSettings()
+    assert settings.chutes_api_key_value, "CHUTES_API_KEY must be configured"
+    provider = build_miner_paid_llm_provider(
+        provider="chutes",
+        api_key=settings.chutes_api_key,
+        llm_settings=settings,
+    )
+    try:
+        response = await provider.invoke(_completion_request(model="zai-org/GLM-5-TEE"))
     finally:
         await provider.aclose()
 

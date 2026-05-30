@@ -123,6 +123,102 @@ def test_build_cached_llm_provider_resolver_caches_by_provider_name(
     assert fourth.provider_name == "vertex"
 
 
+def test_miner_paid_chutes_provider_uses_explicit_key_without_shared_concurrency(
+    monkeypatch,
+) -> None:
+    captured_providers: list[dict[str, object]] = []
+    captured_adapters: list[tuple[str, object]] = []
+
+    class _FakeChutesProvider:
+        def __init__(self, **kwargs: object) -> None:
+            captured_providers.append(kwargs)
+
+    class _FakeAdapter:
+        def __init__(self, *, provider_name: str, delegate: object) -> None:
+            self.provider_name = provider_name
+            self.delegate = delegate
+            captured_adapters.append((provider_name, delegate))
+
+    monkeypatch.setattr(provider_factory, "ChutesLlmProvider", _FakeChutesProvider)
+    monkeypatch.setattr(provider_factory, "LlmProviderAdapter", _FakeAdapter)
+
+    provider = provider_factory.build_miner_paid_llm_provider(
+        provider="chutes",
+        api_key=SecretStr("miner-chutes-key"),
+        llm_settings=LlmSettings.model_construct(
+            chutes_api_key=SecretStr("operator-chutes-key"),
+            chutes_max_concurrent=13,
+        ),
+    )
+
+    assert captured_providers == [
+        {
+            "base_url": provider_factory.CHUTES.base_url,
+            "api_key": "miner-chutes-key",
+            "timeout": provider_factory.CHUTES.timeout_seconds,
+            "max_concurrent": None,
+        }
+    ]
+    adapter = cast(_FakeAdapter, provider)
+    assert captured_adapters == [("chutes", adapter.delegate)]
+
+
+def test_miner_paid_openrouter_provider_uses_explicit_key(
+    monkeypatch,
+) -> None:
+    captured_providers: list[dict[str, object]] = []
+    captured_adapters: list[tuple[str, object]] = []
+
+    class _FakeOpenRouterProvider:
+        def __init__(self, **kwargs: object) -> None:
+            captured_providers.append(kwargs)
+
+    class _FakeAdapter:
+        def __init__(self, *, provider_name: str, delegate: object) -> None:
+            self.provider_name = provider_name
+            self.delegate = delegate
+            captured_adapters.append((provider_name, delegate))
+
+    monkeypatch.setattr(provider_factory, "OpenRouterLlmProvider", _FakeOpenRouterProvider)
+    monkeypatch.setattr(provider_factory, "LlmProviderAdapter", _FakeAdapter)
+
+    settings = LlmSettings(
+        OPENROUTER_API_KEY="operator-openrouter-key",
+        OPENROUTER_MODEL_PROVIDER_OPTIONS_JSON='{"openai/gpt-oss-20b":{"require_parameters":true}}',
+    )
+    provider = provider_factory.build_miner_paid_llm_provider(
+        provider="openrouter",
+        api_key=SecretStr("miner-openrouter-key"),
+        llm_settings=settings,
+    )
+
+    assert len(captured_providers) == 1
+    openrouter_api_key = captured_providers[0]["openrouter_api_key"]
+    assert isinstance(openrouter_api_key, SecretStr)
+    assert openrouter_api_key.get_secret_value() == "miner-openrouter-key"
+    assert captured_providers[0]["model_provider_options"] == settings.openrouter_model_provider_options
+    adapter = cast(_FakeAdapter, provider)
+    assert captured_adapters == [("openrouter", adapter.delegate)]
+
+
+def test_miner_paid_llm_provider_rejects_blank_key() -> None:
+    with pytest.raises(ValueError, match="miner-paid API key must be provided"):
+        provider_factory.build_miner_paid_llm_provider(
+            provider="chutes",
+            api_key="   ",
+            llm_settings=LlmSettings.model_construct(),
+        )
+
+
+def test_miner_paid_llm_provider_rejects_unknown_provider() -> None:
+    with pytest.raises(ValueError, match="miner-selected llm provider"):
+        provider_factory.build_miner_paid_llm_provider(
+            provider="unknown",
+            api_key="miner-key",
+            llm_settings=LlmSettings.model_construct(),
+        )
+
+
 async def test_build_cached_llm_provider_registry_closes_cached_providers_once(
     monkeypatch,
 ) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -153,6 +153,18 @@ class OpenRouterModelProviderOptions(BaseModel):
 
 _OPENROUTER_PROVIDER_OPTIONS_ADAPTER = TypeAdapter(dict[str, OpenRouterModelProviderOptions])
 
+SearchProviderName = Literal["desearch", "parallel"]
+SEARCH_PROVIDER_NAMES: tuple[SearchProviderName, ...] = ("desearch", "parallel")
+
+
+def parse_search_provider_name(raw: str | None) -> SearchProviderName:
+    if raw is None:
+        raise ValueError("search provider must be specified")
+    value = raw.strip().lower()
+    if value not in SEARCH_PROVIDER_NAMES:
+        raise ValueError(f"search provider {value!r} is not supported")
+    return cast(SearchProviderName, value)
+
 
 class LlmSettings(BaseSettings):
     """Configuration for LLM providers and related API keys."""
@@ -169,7 +181,7 @@ class LlmSettings(BaseSettings):
 
     # --- Tooling / search ---
     tool_llm_provider: LlmProviderName = Field(default="chutes", alias="TOOL_LLM_PROVIDER")
-    search_provider: Literal["desearch", "parallel"] | None = Field(default=None, alias="SEARCH_PROVIDER")
+    search_provider: SearchProviderName | None = Field(default=None, alias="SEARCH_PROVIDER")
 
     # --- Generation / reference / benchmark ---
     generator_llm_provider: LlmProviderName = Field(default="chutes", alias="GENERATOR_LLM_PROVIDER")
@@ -350,6 +362,9 @@ __all__ = [
     "OpenAiCompatibleGoogleIdTokenAuthConfig",
     "OpenAiCompatibleNoAuthConfig",
     "OpenRouterModelProviderOptions",
+    "SEARCH_PROVIDER_NAMES",
+    "SearchProviderName",
     "parse_openai_compatible_endpoints_json",
     "parse_openrouter_model_provider_options_json",
+    "parse_search_provider_name",
 ]
