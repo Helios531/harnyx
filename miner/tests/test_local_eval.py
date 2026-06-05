@@ -582,7 +582,7 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
         "_resolve_scoring_judge_route",
         lambda _settings: SimpleNamespace(provider="chutes"),
     )
-    monkeypatch.setattr(local_eval, "_build_tooling", lambda **_: (object(), _UnusedToolExecutor()))
+    monkeypatch.setattr(local_eval, "_build_local_provider_tooling", lambda **_: (object(), _UnusedToolExecutor()))
     monkeypatch.setattr(
         local_eval,
         "_create_scoring_service",
@@ -1059,7 +1059,7 @@ def test_invocation_only_runtime_factory_skips_default_scoring_provider(
             tool_llm_provider=None,
         ),
     )
-    monkeypatch.setattr(local_eval, "_build_tooling", lambda **_kwargs: (object(), object()))
+    monkeypatch.setattr(local_eval, "_build_local_provider_tooling", lambda **_kwargs: (object(), object()))
     monkeypatch.setattr(local_eval, "create_sandbox_manager", lambda **_kwargs: object())
 
     runtime = local_eval.LocalEvaluationRuntime.create_invocation_only(

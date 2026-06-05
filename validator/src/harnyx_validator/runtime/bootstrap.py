@@ -20,7 +20,7 @@ from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmProviderPort
-from harnyx_commons.llm.provider_factory import CachedLlmProviderRegistry
+from harnyx_commons.llm.provider_factory import CachedLlmProviderRegistry, build_cached_llm_provider_registry
 from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER, parse_builtin_provider_name
 from harnyx_commons.llm.routing import ResolvedLlmRoute, resolve_llm_route
 from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS, parse_miner_selected_llm_provider_model
@@ -33,7 +33,6 @@ from harnyx_commons.sandbox.options import SandboxOptions
 from harnyx_commons.sandbox.runtime import build_sandbox_options, create_sandbox_manager
 from harnyx_commons.tools.dto import ToolInvocationRequest, tool_payload_for_invocation
 from harnyx_commons.tools.executor import ToolExecutor, ToolInvocationContext, ToolInvocationOutput, ToolInvoker
-from harnyx_commons.tools.invocation_clients import build_tool_invocation_clients
 from harnyx_commons.tools.ports import WebSearchProviderPort
 from harnyx_commons.tools.runtime_invoker import (
     RuntimeToolInvoker,
@@ -220,6 +219,17 @@ class RuntimeContext:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeLlmClients:
+    search_client: WebSearchProviderPort | None
+    llm_provider_registry: CachedLlmProviderRegistry
+    tool_llm_provider: LlmProviderPort | None
+    scoring_llm_provider: LlmProviderPort | None
+    similarity_llm_provider: LlmProviderPort | None
+    scoring_route: ResolvedLlmRoute
+    similarity_route: ResolvedLlmRoute
+
+
+@dataclass(frozen=True, slots=True)
 class InMemoryState:
     session_registry: InMemorySessionRegistry
     token_registry: InMemoryTokenRegistry
@@ -248,29 +258,18 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         subtensor_client,
     ) = _build_external_clients(resolved)
 
-    (
-        search_client,
-        llm_provider_registry,
-        tool_llm_provider,
-        scoring_llm_provider,
-        similarity_llm_provider,
-        scoring_route,
-        similarity_route,
-    ) = _build_llm_clients(resolved)
-    tool_invoker, tool_executor = _build_tooling(
+    llm_clients = _build_llm_clients(resolved)
+    tool_invoker, tool_executor = _build_proxy_tooling(
         state=state,
-        resolved=resolved,
-        search_client=search_client,
-        tool_llm_provider=tool_llm_provider,
         platform_tool_proxy_platform_client=platform_tool_proxy_platform_client,
     )
 
     scoring_service, similarity_judge, weight_submission_service = _build_services(
         resolved=resolved,
-        scoring_llm_provider=scoring_llm_provider,
-        similarity_llm_provider=similarity_llm_provider,
-        scoring_route=scoring_route,
-        similarity_route=similarity_route,
+        scoring_llm_provider=llm_clients.scoring_llm_provider,
+        similarity_llm_provider=llm_clients.similarity_llm_provider,
+        scoring_route=llm_clients.scoring_route,
+        similarity_route=llm_clients.similarity_route,
         subtensor_client=subtensor_client,
         platform_client=platform_client,
     )
@@ -315,11 +314,11 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         evaluation_records=state.evaluation_records,
         progress_tracker=state.progress_tracker,
         usage_tracker=state.usage_tracker,
-        search_client=search_client,
-        llm_provider_registry=llm_provider_registry,
-        tool_llm_provider=tool_llm_provider,
-        scoring_llm_provider=scoring_llm_provider,
-        similarity_llm_provider=similarity_llm_provider,
+        search_client=llm_clients.search_client,
+        llm_provider_registry=llm_clients.llm_provider_registry,
+        tool_llm_provider=llm_clients.tool_llm_provider,
+        scoring_llm_provider=llm_clients.scoring_llm_provider,
+        similarity_llm_provider=llm_clients.similarity_llm_provider,
         tool_invoker=tool_invoker,
         tool_executor=tool_executor,
         tool_concurrency_limiter=state.tool_concurrency_limiter,
@@ -396,36 +395,22 @@ def _build_external_clients(
     return platform_client, platform_tool_proxy_client, platform_hotkey, subtensor_client
 
 
-def _build_llm_clients(
-    settings: Settings,
-) -> tuple[
-    WebSearchProviderPort | None,
-    CachedLlmProviderRegistry,
-    LlmProviderPort | None,
-    LlmProviderPort | None,
-    LlmProviderPort | None,
-    ResolvedLlmRoute,
-    ResolvedLlmRoute,
-]:
-    invocation_clients = build_tool_invocation_clients(
+def _build_llm_clients(settings: Settings) -> RuntimeLlmClients:
+    llm_provider_registry = build_cached_llm_provider_registry(
         llm_settings=settings.llm,
         bedrock_settings=settings.bedrock,
         vertex_settings=settings.vertex,
-        lazy_search=False,
-        require_search=True,
     )
     scoring_route = _resolve_scoring_judge_route(settings)
     similarity_route = _resolve_similarity_judge_route(settings)
-    scoring_llm_provider = invocation_clients.llm_provider_registry.resolve(scoring_route.provider)
-    similarity_llm_provider = invocation_clients.llm_provider_registry.resolve(similarity_route.provider)
-    return (
-        invocation_clients.search_client,
-        invocation_clients.llm_provider_registry,
-        invocation_clients.tool_llm_provider,
-        scoring_llm_provider,
-        similarity_llm_provider,
-        scoring_route,
-        similarity_route,
+    return RuntimeLlmClients(
+        search_client=None,
+        llm_provider_registry=llm_provider_registry,
+        tool_llm_provider=None,
+        scoring_llm_provider=llm_provider_registry.resolve(scoring_route.provider),
+        similarity_llm_provider=llm_provider_registry.resolve(similarity_route.provider),
+        scoring_route=scoring_route,
+        similarity_route=similarity_route,
     )
 
 
@@ -458,13 +443,40 @@ def _resolve_similarity_judge_route(settings: Settings) -> ResolvedLlmRoute:
     )
 
 
-def _build_tooling(
+def _build_proxy_tooling(
+    *,
+    state: InMemoryState,
+    platform_tool_proxy_platform_client: PlatformToolProxyPlatformPort,
+) -> tuple[ToolInvoker, ToolExecutor]:
+    local_invoker = build_miner_sandbox_tool_invoker(
+        state.receipt_log,
+        web_search_client=None,
+        web_search_provider_name=None,
+        llm_provider=None,
+        llm_provider_name=None,
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+    tool_invoker = PlatformToolProxyProxyToolInvoker(
+        local_invoker=local_invoker,
+        platform_tool_proxy_platform=platform_tool_proxy_platform_client,
+        scopes=state.platform_tool_proxy_scopes,
+    )
+    return tool_invoker, ToolExecutor(
+        session_registry=state.session_registry,
+        receipt_log=state.receipt_log,
+        usage_tracker=state.usage_tracker,
+        tool_invoker=tool_invoker,
+        token_registry=state.token_registry,
+        clock=_clock,
+    )
+
+
+def _build_local_provider_tooling(
     *,
     state: InMemoryState,
     resolved: Settings,
     search_client: WebSearchProviderPort | None,
     tool_llm_provider: LlmProviderPort | None,
-    platform_tool_proxy_platform_client: PlatformToolProxyPlatformPort | None = None,
 ) -> tuple[ToolInvoker, ToolExecutor]:
     local_invoker = build_miner_sandbox_tool_invoker(
         state.receipt_log,
@@ -474,34 +486,17 @@ def _build_tooling(
         llm_provider_name=resolved.llm.tool_llm_provider,
         allowed_models=ALLOWED_TOOL_MODELS,
     )
-    tool_invoker: ToolInvoker = local_invoker
-    if platform_tool_proxy_platform_client is not None:
-        tool_invoker = PlatformToolProxyProxyToolInvoker(
-            local_invoker=local_invoker,
-            platform_tool_proxy_platform=platform_tool_proxy_platform_client,
-            scopes=state.platform_tool_proxy_scopes,
-        )
-        tool_executor: ToolExecutor = ToolExecutor(
-            session_registry=state.session_registry,
-            receipt_log=state.receipt_log,
-            usage_tracker=state.usage_tracker,
-            tool_invoker=tool_invoker,
-            token_registry=state.token_registry,
-            clock=_clock,
-        )
-    else:
-        tool_executor = _ProviderTrackingToolExecutor(
-            session_registry=state.session_registry,
-            receipt_log=state.receipt_log,
-            usage_tracker=state.usage_tracker,
-            tool_invoker=tool_invoker,
-            token_registry=state.token_registry,
-            clock=_clock,
-            progress=state.progress_tracker,
-            search_provider_name=resolved.llm.search_provider,
-            llm_route_resolver=_build_tool_route_resolver(resolved),
-        )
-    return tool_invoker, tool_executor
+    return local_invoker, _ProviderTrackingToolExecutor(
+        session_registry=state.session_registry,
+        receipt_log=state.receipt_log,
+        usage_tracker=state.usage_tracker,
+        tool_invoker=local_invoker,
+        token_registry=state.token_registry,
+        clock=_clock,
+        progress=state.progress_tracker,
+        search_provider_name=resolved.llm.search_provider,
+        llm_route_resolver=_build_tool_route_resolver(resolved),
+    )
 
 
 def _build_services(

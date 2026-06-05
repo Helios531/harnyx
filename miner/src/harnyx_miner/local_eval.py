@@ -75,8 +75,8 @@ from harnyx_validator.application.services.evaluation_runner import (
 from harnyx_validator.infrastructure.http.local_tool_host import LocalToolHostHandle, start_local_tool_host
 from harnyx_validator.infrastructure.state.run_progress import FileBackedRunProgress
 from harnyx_validator.runtime.bootstrap import (
+    _build_local_provider_tooling,
     _build_state,
-    _build_tooling,
     _create_scoring_service,
     _resolve_scoring_judge_route,
 )
@@ -442,7 +442,7 @@ class LocalEvaluationRuntime:
         scoring_config: EvaluationScoringConfig,
         progress_reporter: _CliProgressReporter | None,
     ) -> LocalEvaluationRuntime:
-        _, tool_executor = _build_tooling(
+        _, tool_executor = _build_local_provider_tooling(
             state=state,
             resolved=settings,
             search_client=search_client,

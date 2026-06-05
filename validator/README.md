@@ -9,7 +9,7 @@ Before starting, ensure you have:
 1. **Docker** installed and running (Docker Compose v2+)
 2. **A Bittensor wallet/hotkey** registered on the subnet metagraph
 3. **A public endpoint** reachable by the platform (for registration + evaluation callbacks)
-4. **API keys** for LLM and search tools (see env vars below)
+4. **API key** for validator scoring/similarity LLM calls (see env vars below)
 
 ### Hardware + networking (quick sizing)
 
@@ -17,7 +17,7 @@ Before starting, ensure you have:
 - RAM: 32 GiB
 - Disk: 20 GB
 - Network: platform must reach your validator on TCP 8100; set `VALIDATOR_PUBLIC_BASE_URL` accordingly
-- Third-party APIs: Chutes (`CHUTES_API_KEY`) + DeSearch (`DESEARCH_API_KEY`), plus OpenRouter (`OPENROUTER_API_KEY`) if your validator serves Chutes-selected tool models that route through OpenRouter.
+- Third-party APIs: Chutes (`CHUTES_API_KEY`) for validator scoring/similarity by default; provider-backed miner script tools use miner-stored credentials through platform tool proxy.
 
 ## Step 1: Create your env file
 
@@ -33,11 +33,12 @@ Edit `.env` and set at least:
 |----------|-------------|
 | `PLATFORM_BASE_URL` | Platform API endpoint (finney/mainnet: `https://api.harnyx.ai`, testnet: `https://api.staging.harnyx.ai`) |
 | `VALIDATOR_PUBLIC_BASE_URL` | How the platform can reach your validator |
-| `CHUTES_API_KEY` | API key for LLM calls |
-| `OPENROUTER_API_KEY` | Optional API key for Chutes-selected OpenRouter-routed `llm_chat` models such as `openai/gpt-oss-20b`, `openai/gpt-oss-120b`, and `Qwen/Qwen3.6-27B-TEE` when no explicit custom route override handles that model |
-| `DESEARCH_API_KEY` | API key for search tools |
+| `CHUTES_API_KEY` | API key for the default validator scoring/similarity provider |
+| `SCORING_LLM_PROVIDER` | Optional scoring/similarity provider selector; defaults to `chutes` |
 
-The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`. The checked-in default is `SEARCH_PROVIDER=desearch`. If you need a fallback search provider, the validator also supports `parallel`; set `SEARCH_PROVIDER=parallel` and `PARALLEL_API_KEY`. Validator sandbox execution defaults to `harnyx/harnyx-subnet-sandbox:finney`; set `SANDBOX_IMAGE=harnyx/harnyx-subnet-sandbox:testnet` for staging/testnet, or use another explicit value only when you intentionally want to test or pin a different sandbox image. `VALIDATOR_ARTIFACT_PARALLELISM` controls concurrent artifact sandboxes and defaults to `4`; `VALIDATOR_TASK_PARALLELISM` controls batch-wide task sessions across those artifacts and defaults to `20`.
+The defaults in `.env.example` already target mainnet (`finney`) and netuid `67`. Validator sandbox execution defaults to `harnyx/harnyx-subnet-sandbox:finney`; set `SANDBOX_IMAGE=harnyx/harnyx-subnet-sandbox:testnet` for staging/testnet, or use another explicit value only when you intentionally want to test or pin a different sandbox image. `VALIDATOR_ARTIFACT_PARALLELISM` controls concurrent artifact sandboxes and defaults to `4`; `VALIDATOR_TASK_PARALLELISM` controls batch-wide task sessions across those artifacts and defaults to `20`.
+
+Provider-backed miner script tools execute through platform tool proxy with miner-stored credentials. Validators do not need `SEARCH_PROVIDER`, `DESEARCH_API_KEY`, `PARALLEL_API_KEY`, or `TOOL_LLM_PROVIDER` for normal miner task provider-backed tool execution.
 
 Completed-run execution logs are stored under the validator state volume while the platform drains `/runs` pages. `VALIDATOR_RUN_PROGRESS_RETENTION_SECONDS` controls how long terminal batch blobs are retained before cleanup; it defaults to 24 hours. `VALIDATOR_RUN_PROGRESS_CLEANUP_INTERVAL_SECONDS` controls the idle cleanup cadence and defaults to 10 minutes. Operators with intentionally delayed platform sync can increase the retention window.
 
@@ -45,7 +46,7 @@ Validator scoring keeps `SCORING_LLM_PROVIDER` configurable, but the scoring mod
 
 Post-dethrone similarity judging uses the same fixed `moonshotai/Kimi-K2.5-TEE` model contract as scoring and is routed through the `duplication_detection` surface in `LLM_MODEL_PROVIDER_OVERRIDES_JSON`. The platform computes the dethrone order and sends the original incumbent script plus candidate diff to validators; validators own the similarity prompt internally and return a duplicate/not-duplicate verdict with provider reasoning metadata.
 
-When `TOOL_LLM_PROVIDER=chutes`, validator tool routing internally sends configured OpenRouter-routed models to OpenRouter. `OPENROUTER_API_KEY` is checked only when one of those models is invoked; validators that do not serve them can leave the key blank. Explicit `LLM_MODEL_PROVIDER_OVERRIDES_JSON` entries still win, so internal deployments can route Qwen to `custom-openai-compatible:qwen36-cloud-run` without invoking OpenRouter for Qwen. Do not set `TOOL_LLM_PROVIDER=openrouter`; `openrouter` is an internal route target, not an operator-selectable provider.
+Shared route override variables may still appear in internal/local tooling deployments, including miner local eval, but they are not validator server miner-task provider credential requirements.
 
 ### Optional Sentry
 

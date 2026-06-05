@@ -21,18 +21,7 @@ from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCallOutcome
 from harnyx_commons.errors import BudgetExceededError, ConcurrencyLimitError, ToolProviderError
 from harnyx_commons.llm.routing import ResolvedLlmRoute
-from harnyx_commons.llm.schema import (
-    LlmChoice,
-    LlmChoiceMessage,
-    LlmMessage,
-    LlmMessageContentPart,
-    LlmRequest,
-    LlmResponse,
-    LlmUsage,
-)
-from harnyx_commons.tools import invocation_clients
 from harnyx_commons.tools.dto import ToolInvocationRequest
-from harnyx_commons.tools.invocation_clients import build_web_search_provider
 from harnyx_commons.tools.types import ToolName
 from harnyx_validator.application.ports.platform import PlatformToolProxyGrant
 from harnyx_validator.infrastructure.tools.platform_client import (
@@ -43,7 +32,7 @@ from harnyx_validator.infrastructure.tools.platform_client import (
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.bootstrap import (
     _build_llm_clients,
-    _build_tooling,
+    _build_proxy_tooling,
     _create_scoring_service,
     _create_similarity_judge,
     close_runtime_resources,
@@ -52,48 +41,6 @@ from harnyx_validator.runtime.settings import Settings
 
 DEFAULT_LIMIT_LLM_MODEL = "openai/gpt-oss-20b"
 TEST_SESSION_TOKEN = "validator-session-token"  # noqa: S105
-
-
-class _FakeLlmProvider:
-    def __init__(self) -> None:
-        self.requests: list[LlmRequest] = []
-
-    async def invoke(self, request: LlmRequest) -> LlmResponse:
-        self.requests.append(request)
-        return LlmResponse(
-            id="resp-1",
-            choices=(
-                LlmChoice(
-                    index=0,
-                    message=LlmChoiceMessage(
-                        role="assistant",
-                        content=(LlmMessageContentPart(type="text", text="ok"),),
-                    ),
-                    finish_reason="stop",
-                ),
-            ),
-            usage=LlmUsage(),
-            finish_reason="stop",
-        )
-
-    async def aclose(self) -> None:
-        return None
-
-
-class _FakeLlmRegistry:
-    def __init__(self) -> None:
-        self._providers: dict[str, _FakeLlmProvider] = {}
-
-    @property
-    def requests_by_provider(self) -> dict[str, list[LlmRequest]]:
-        return {provider_name: provider.requests for provider_name, provider in self._providers.items()}
-
-    def resolve(self, name: str) -> _FakeLlmProvider:
-        provider = self._providers.get(name)
-        if provider is None:
-            provider = _FakeLlmProvider()
-            self._providers[name] = provider
-        return provider
 
 
 class _ProviderFailingPlatformToolProxyClient:
@@ -183,91 +130,13 @@ def test_llm_settings_default_scoring_timeout_is_300_seconds() -> None:
     assert LlmSettings(_env_file=None).scoring_llm_timeout_seconds == pytest.approx(300.0)
 
 
-def _settings_with_gemma_tool_route() -> Settings:
-    return Settings.model_construct(
-        llm=LlmSettings.model_construct(
-            search_provider="parallel",
-            parallel_base_url="https://proxy.parallel.test",
-            parallel_api_key=SecretStr("parallel-key"),
-            tool_llm_provider="chutes",
-            scoring_llm_provider="chutes",
-            chutes_api_key=SecretStr("test-key"),
-            llm_model_provider_overrides_json=json.dumps(
-                {"tool": {"google/gemma-4-31B-turbo-TEE": "custom-openai-compatible:gemma4-cloud-run-turbo"}}
-            ),
-            openai_compatible_endpoints_json=json.dumps(
-                [
-                    {
-                        "id": "gemma4-cloud-run-turbo",
-                        "base_url": "https://gemma.example.run.app/v1",
-                        "auth": {"type": "none"},
-                    }
-                ]
-            ),
-        ),
-        bedrock=BedrockSettings.model_construct(region="us-east-1"),
-        vertex=VertexSettings.model_construct(
-            gcp_project_id="project",
-            gcp_location="us-central1",
-            vertex_timeout_seconds=60.0,
-            gcp_service_account_credential_b64=SecretStr("vertex-creds"),
-        ),
-    )
-
-
-def _gemma_tool_request() -> LlmRequest:
-    return LlmRequest(
-        provider="chutes",
-        model="google/gemma-4-31B-turbo-TEE",
-        messages=(
-            LlmMessage(
-                role="user",
-                content=(LlmMessageContentPart.input_text('Reply with only "ok".'),),
-            ),
-        ),
-        temperature=0.0,
-        max_output_tokens=8,
-    )
-
-
-def test_build_web_search_provider_requires_search_provider() -> None:
-    llm_settings = LlmSettings.model_construct(search_provider=None)
-
-    with pytest.raises(RuntimeError, match="SEARCH_PROVIDER must be configured"):
-        build_web_search_provider(llm_settings)
-
-
-def test_build_web_search_provider_uses_configured_parallel_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, object] = {}
-
-    class _FakeParallelClient:
-        def __init__(self, **kwargs: object) -> None:
-            captured.update(kwargs)
-
-    monkeypatch.setattr(invocation_clients, "ParallelClient", _FakeParallelClient)
-    llm_settings = LlmSettings.model_construct(
-        search_provider="parallel",
-        parallel_base_url="https://proxy.parallel.test",
-        parallel_api_key=SecretStr("parallel-key"),
-        parallel_max_concurrent=7,
-    )
-
-    build_web_search_provider(llm_settings)
-
-    assert captured["base_url"] == "https://proxy.parallel.test"
-    assert captured["api_key"] == "parallel-key"
-    assert captured["max_concurrent"] == 7
-
-
 def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
-            search_provider="parallel",
-            parallel_base_url="https://proxy.parallel.test",
-            parallel_api_key=SecretStr("parallel-key"),
-            parallel_max_concurrent=7,
-            tool_llm_provider="chutes",
+            search_provider=None,
+            tool_llm_provider="bedrock",
             scoring_llm_provider="vertex",
+            llm_model_provider_overrides_json=json.dumps({"tool": {"unused-tool-model": "bedrock"}}),
         ),
         vertex=VertexSettings.model_construct(
             gcp_project_id="project",
@@ -290,32 +159,21 @@ def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.Mon
         assert vertex_settings is settings.vertex
         return _FakeRegistry()
 
-    monkeypatch.setattr(
-        invocation_clients,
-        "build_cached_llm_provider_registry",
-        fake_build_cached_llm_provider_registry,
-    )
+    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", fake_build_cached_llm_provider_registry)
 
-    (
-        _,
-        provider_registry,
-        tool_provider,
-        scoring_provider,
-        similarity_provider,
-        scoring_route,
-        similarity_route,
-    ) = _build_llm_clients(settings)
+    clients = _build_llm_clients(settings)
 
-    assert type(tool_provider).__name__ == "LazyLlmProvider"
-    assert scoring_provider == "provider:vertex"
-    assert similarity_provider == "provider:vertex"
-    assert type(provider_registry).__name__ == "_FakeRegistry"
-    assert scoring_route == ResolvedLlmRoute(
+    assert clients.search_client is None
+    assert clients.tool_llm_provider is None
+    assert clients.scoring_llm_provider == "provider:vertex"
+    assert clients.similarity_llm_provider == "provider:vertex"
+    assert type(clients.llm_provider_registry).__name__ == "_FakeRegistry"
+    assert clients.scoring_route == ResolvedLlmRoute(
         surface="scoring",
         provider="vertex",
         model=bootstrap._SCORING_LLM_MODEL,
     )
-    assert similarity_route == ResolvedLlmRoute(
+    assert clients.similarity_route == ResolvedLlmRoute(
         surface="duplication_detection",
         provider="vertex",
         model=bootstrap._DUPLICATION_DETECTION_LLM_MODEL,
@@ -323,7 +181,9 @@ def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.Mon
     assert calls == ["vertex", "vertex"]
 
 
-def test_build_llm_clients_requires_search_provider() -> None:
+def test_validator_runtime_llm_clients_do_not_build_local_tool_invocation_clients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
             search_provider=None,
@@ -340,26 +200,15 @@ def test_build_llm_clients_requires_search_provider() -> None:
         ),
     )
 
-    with pytest.raises(RuntimeError, match="SEARCH_PROVIDER must be configured"):
-        _build_llm_clients(settings)
+    def fail_if_called(**_: object) -> object:
+        raise AssertionError("validator runtime must not build local tool invocation clients")
 
+    monkeypatch.setattr(bootstrap, "build_tool_invocation_clients", fail_if_called, raising=False)
 
-@pytest.mark.anyio("asyncio")
-async def test_build_llm_clients_routes_gemma_tool_model_to_custom_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = _settings_with_gemma_tool_route()
-    registry = _FakeLlmRegistry()
-    monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: registry)
+    clients = _build_llm_clients(settings)
 
-    _, _, tool_provider, _, _, _, _ = _build_llm_clients(settings)
-
-    assert tool_provider is not None
-    await tool_provider.invoke(_gemma_tool_request())
-
-    assert registry.requests_by_provider["custom-openai-compatible:gemma4-cloud-run-turbo"][0].provider == (
-        "custom-openai-compatible:gemma4-cloud-run-turbo"
-    )
+    assert clients.search_client is None
+    assert clients.tool_llm_provider is None
 
 
 def test_build_llm_clients_uses_scoring_model_override_for_route_resolution(
@@ -389,12 +238,12 @@ def test_build_llm_clients_uses_scoring_model_override_for_route_resolution(
         def resolve(self, name: str) -> str:
             return f"provider:{name}"
 
-    monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
+    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 
-    _, _, _, scoring_provider, _, scoring_route, _ = _build_llm_clients(settings)
+    clients = _build_llm_clients(settings)
 
-    assert scoring_provider == "provider:bedrock"
-    assert scoring_route == ResolvedLlmRoute(
+    assert clients.scoring_llm_provider == "provider:bedrock"
+    assert clients.scoring_route == ResolvedLlmRoute(
         surface="scoring",
         provider="bedrock",
         model="custom/internal-model",
@@ -431,14 +280,11 @@ def test_build_state_uses_single_tool_concurrency_cap(tmp_path: Path) -> None:
     state.tool_concurrency_limiter.release(next_invocation)
 
 
-def test_build_tooling_uses_plain_executor_with_platform_tool_proxy_client(tmp_path: Path) -> None:
+def test_build_proxy_tooling_uses_plain_executor_with_platform_tool_proxy_client(tmp_path: Path) -> None:
     state = bootstrap._build_state(_settings_for_tooling(), progress_storage_root=tmp_path / "run-progress")
 
-    tool_invoker, tool_executor = _build_tooling(
+    tool_invoker, tool_executor = _build_proxy_tooling(
         state=state,
-        resolved=_settings_for_tooling(),
-        search_client=None,
-        tool_llm_provider=None,
         platform_tool_proxy_platform_client=_ProviderFailingPlatformToolProxyClient(),
     )
 
@@ -464,11 +310,8 @@ async def test_proxy_enabled_tool_executor_keeps_provider_failure_miner_owned_wi
         task_id=task_id,
     )
     platform = _ProviderFailingPlatformToolProxyClient()
-    _, tool_executor = _build_tooling(
+    _, tool_executor = _build_proxy_tooling(
         state=state,
-        resolved=_settings_for_tooling(),
-        search_client=None,
-        tool_llm_provider=None,
         platform_tool_proxy_platform_client=platform,
     )
     request = ToolInvocationRequest(
@@ -508,11 +351,8 @@ async def test_proxy_enabled_tool_executor_keeps_llm_provider_failure_miner_owne
         task_id=task_id,
     )
     platform = _ProviderFailingPlatformToolProxyClient()
-    _, tool_executor = _build_tooling(
+    _, tool_executor = _build_proxy_tooling(
         state=state,
-        resolved=_settings_for_tooling(),
-        search_client=None,
-        tool_llm_provider=None,
         platform_tool_proxy_platform_client=platform,
     )
     request = ToolInvocationRequest(
@@ -558,11 +398,8 @@ async def test_proxy_enabled_tool_executor_does_not_default_attribute_invalid_ex
         task_id=task_id,
     )
     platform = _ProviderFailingPlatformToolProxyClient()
-    _, tool_executor = _build_tooling(
+    _, tool_executor = _build_proxy_tooling(
         state=state,
-        resolved=_settings_for_tooling(),
-        search_client=None,
-        tool_llm_provider=None,
         platform_tool_proxy_platform_client=platform,
     )
     request = ToolInvocationRequest(
@@ -601,11 +438,8 @@ async def test_proxy_enabled_tool_executor_does_not_record_provider_failure_for_
         task_id=task_id,
     )
     platform = _ProxyPolicyFailingPlatformToolProxyClient()
-    _, tool_executor = _build_tooling(
+    _, tool_executor = _build_proxy_tooling(
         state=state,
-        resolved=_settings_for_tooling(),
-        search_client=None,
-        tool_llm_provider=None,
         platform_tool_proxy_platform_client=platform,
     )
     request = ToolInvocationRequest(
@@ -644,11 +478,8 @@ async def test_proxy_enabled_tool_executor_records_budget_exceeded_receipt_witho
         task_id=task_id,
     )
     platform = _BudgetFailingPlatformToolProxyClient()
-    _, tool_executor = _build_tooling(
+    _, tool_executor = _build_proxy_tooling(
         state=state,
-        resolved=_settings_for_tooling(),
-        search_client=None,
-        tool_llm_provider=None,
         platform_tool_proxy_platform_client=platform,
     )
     request = ToolInvocationRequest(
@@ -688,11 +519,8 @@ async def test_proxy_enabled_tool_executor_keeps_no_provider_payload_failure_min
         task_id=task_id,
     )
     platform = _ProviderFailingPlatformToolProxyClient()
-    _, tool_executor = _build_tooling(
+    _, tool_executor = _build_proxy_tooling(
         state=state,
-        resolved=_settings_for_tooling("desearch"),
-        search_client=None,
-        tool_llm_provider=None,
         platform_tool_proxy_platform_client=platform,
     )
     request = ToolInvocationRequest(
@@ -751,9 +579,17 @@ def test_build_runtime_cleans_stale_sandbox_containers_on_startup(
     monkeypatch.setattr(
         bootstrap,
         "_build_llm_clients",
-        lambda _settings: (None, None, None, None, None, object(), object()),
+        lambda _settings: bootstrap.RuntimeLlmClients(
+            search_client=None,
+            llm_provider_registry=object(),
+            tool_llm_provider=None,
+            scoring_llm_provider=None,
+            similarity_llm_provider=None,
+            scoring_route=object(),
+            similarity_route=object(),
+        ),
     )
-    monkeypatch.setattr(bootstrap, "_build_tooling", lambda **_kwargs: (object(), object()))
+    monkeypatch.setattr(bootstrap, "_build_proxy_tooling", lambda **_kwargs: (object(), object()))
     monkeypatch.setattr(bootstrap, "_build_services", lambda **_kwargs: (object(), object(), object()))
     monkeypatch.setattr(
         bootstrap,
@@ -953,12 +789,12 @@ def test_build_llm_clients_allows_bedrock_scoring_route(
         def resolve(self, name: str) -> str:
             return f"provider:{name}"
 
-    monkeypatch.setattr(invocation_clients, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
+    monkeypatch.setattr(bootstrap, "build_cached_llm_provider_registry", lambda **_: _FakeRegistry())
 
-    _, _, _, scoring_provider, _, scoring_route, _ = _build_llm_clients(settings)
+    clients = _build_llm_clients(settings)
 
-    assert scoring_provider == "provider:bedrock"
-    assert scoring_route == ResolvedLlmRoute(
+    assert clients.scoring_llm_provider == "provider:bedrock"
+    assert clients.scoring_route == ResolvedLlmRoute(
         surface="scoring",
         provider="bedrock",
         model=bootstrap._SCORING_LLM_MODEL,
