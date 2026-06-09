@@ -21,6 +21,9 @@ class InMemoryStatus:
     last_weight_error: str | None = None
     platform_registration_ready: bool = False
     platform_registration_error: str | None = None
+    platform_registration_last_succeeded_at: datetime | None = None
+    platform_registration_last_refresh_error: str | None = None
+    platform_registration_refresh_failure_count: int = 0
     auth_ready: bool = False
     auth_error: str | None = None
 
@@ -143,10 +146,19 @@ class StatusProvider:
     def mark_platform_registration_succeeded(self) -> None:
         self.state.platform_registration_ready = True
         self.state.platform_registration_error = None
+        self.state.platform_registration_last_succeeded_at = datetime.now(UTC)
+        self.state.platform_registration_last_refresh_error = None
+        self.state.platform_registration_refresh_failure_count = 0
 
     def mark_platform_registration_failed(self, error: str) -> None:
         self.state.platform_registration_ready = False
         self.state.platform_registration_error = error
+
+    def mark_platform_registration_refresh_failed(self, error: str) -> None:
+        self.state.platform_registration_last_refresh_error = error
+        self.state.platform_registration_refresh_failure_count += 1
+        if not self.state.platform_registration_ready:
+            self.state.platform_registration_error = error
 
     def platform_registration_ready(self) -> bool:
         return self.state.platform_registration_ready

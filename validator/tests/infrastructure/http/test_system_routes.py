@@ -63,6 +63,19 @@ def test_readyz_returns_ok_after_platform_registration() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_readyz_stays_ok_after_post_startup_registration_refresh_failure() -> None:
+    status_provider = StatusProvider()
+    status_provider.mark_platform_registration_succeeded()
+    status_provider.mark_auth_ready()
+    status_provider.mark_platform_registration_refresh_failed("platform unavailable")
+    client = _create_test_client(status_provider)
+
+    response = client.get("/readyz")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_readyz_returns_waiting_for_auth_warmup_after_platform_registration() -> None:
     status_provider = StatusProvider()
     status_provider.mark_platform_registration_succeeded()

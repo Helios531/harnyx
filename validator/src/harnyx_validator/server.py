@@ -20,6 +20,7 @@ from harnyx_validator.infrastructure.observability.logging import (
 from harnyx_validator.infrastructure.observability.sentry import configure_sentry_from_env
 from harnyx_validator.runtime.bootstrap import build_runtime, close_runtime_resources
 from harnyx_validator.runtime.evaluation_worker import create_evaluation_worker_from_context
+from harnyx_validator.runtime.registration_worker import create_registration_refresh_worker
 from harnyx_validator.runtime.settings import Settings
 from harnyx_validator.runtime.weight_worker import create_weight_worker
 from harnyx_validator.version import VALIDATOR_RELEASE_VERSION
@@ -51,6 +52,10 @@ _weight_worker = create_weight_worker(
     submission_service=_runtime.weight_submission_service,
     status_provider=_runtime.status_provider,
 )
+_registration_refresh_worker = create_registration_refresh_worker(
+    registration_refresh=_runtime.refresh_platform_registration,
+    status_provider=_runtime.status_provider,
+)
 
 WORKER_STOP_TIMEOUT_SECONDS = 60
 logger = logging.getLogger("harnyx_validator.server")
@@ -61,6 +66,7 @@ async def _stop_runtime_components(
     restore_started: bool,
     evaluation_started: bool,
     weight_started: bool,
+    registration_refresh_started: bool,
     auth_started: bool,
 ) -> None:
     if restore_started:
@@ -73,6 +79,11 @@ async def _stop_runtime_components(
             await _evaluation_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
         except Exception:
             logger.exception("failed stopping evaluation worker during shutdown")
+    if registration_refresh_started:
+        try:
+            _registration_refresh_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
+        except Exception:
+            logger.exception("failed stopping registration refresh worker during shutdown")
     if weight_started:
         try:
             _weight_worker.stop(timeout=WORKER_STOP_TIMEOUT_SECONDS)
@@ -89,6 +100,7 @@ async def _stop_runtime_components(
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     auth_started = False
     weight_started = False
+    registration_refresh_started = False
     restore_started = False
     evaluation_started = False
     try:
@@ -96,6 +108,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         auth_started = True
         _weight_worker.start()
         weight_started = True
+        _registration_refresh_worker.start()
+        registration_refresh_started = True
         _restore_worker.start()
         restore_started = True
         _evaluation_worker.start()
@@ -107,6 +121,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 restore_started=restore_started,
                 evaluation_started=evaluation_started,
                 weight_started=weight_started,
+                registration_refresh_started=registration_refresh_started,
                 auth_started=auth_started,
             )
         finally:

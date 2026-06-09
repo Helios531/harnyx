@@ -42,6 +42,7 @@ from harnyx_commons.tools.search_models import SearchProviderName
 from harnyx_commons.tools.token_semaphore import DEFAULT_TOOL_CONCURRENCY_LIMITS, ToolConcurrencyLimiter
 from harnyx_commons.tools.usage_tracker import UsageTracker
 from harnyx_validator.application.accept_batch import AcceptEvaluationBatch
+from harnyx_validator.application.dto.registration import ValidatorRegistrationMetadata
 from harnyx_validator.application.evaluate_task_run import TaskRunOrchestrator
 from harnyx_validator.application.invoke_entrypoint import EntrypointInvoker, SandboxClient
 from harnyx_validator.application.platform_tool_proxy import (
@@ -205,6 +206,7 @@ class RuntimeContext:
     batch_inbox: InMemoryBatchInbox
     restore_worker: RestoreWorker
     status_provider: StatusProvider
+    registration_metadata: ValidatorRegistrationMetadata
     batch_activity: BatchActivityTracker
     tool_route_deps_provider: Callable[[], ToolRouteDeps]
     control_deps_provider: Callable[[], ValidatorControlDeps]
@@ -215,6 +217,19 @@ class RuntimeContext:
             self.settings,
             self.platform_hotkey,
             self.settings.platform_api.validator_public_base_url,
+            metadata=self.registration_metadata,
+            attempts=30,
+            delay_seconds=2.0,
+        )
+
+    def refresh_platform_registration(self) -> None:
+        _register_with_platform(
+            self.settings,
+            self.platform_hotkey,
+            self.settings.platform_api.validator_public_base_url,
+            metadata=self.registration_metadata,
+            attempts=1,
+            delay_seconds=0.0,
         )
 
 
@@ -296,6 +311,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         platform_client=platform_client,
         platform_tool_proxy_platform_client=platform_tool_proxy_platform_client,
     )
+    registration_metadata = resolve_validator_registration_metadata()
 
     batch_blocking_executor = ThreadPoolExecutor(
         max_workers=1,
@@ -335,6 +351,7 @@ def build_runtime(settings: Settings | None = None) -> RuntimeContext:
         batch_inbox=state.batch_inbox,
         restore_worker=restore_worker,
         status_provider=status_provider,
+        registration_metadata=registration_metadata,
         batch_activity=state.batch_activity,
         tool_route_deps_provider=tool_route_provider,
         control_deps_provider=control_provider,
@@ -621,7 +638,15 @@ def _create_platform_client(settings: Settings) -> tuple[PlatformPort, PlatformT
     return client, platform_tool_proxy_client, hotkey
 
 
-def _register_with_platform(settings: Settings, hotkey: bt.Keypair, public_url: str | None) -> None:
+def _register_with_platform(
+    settings: Settings,
+    hotkey: bt.Keypair,
+    public_url: str | None,
+    *,
+    metadata: ValidatorRegistrationMetadata,
+    attempts: int,
+    delay_seconds: float,
+) -> None:
     if not public_url:
         raise RuntimeError("VALIDATOR_PUBLIC_BASE_URL must be configured")
     base = settings.platform_api.platform_base_url
@@ -637,13 +662,18 @@ def _register_with_platform(settings: Settings, hotkey: bt.Keypair, public_url: 
             }
         },
     )
-    metadata = resolve_validator_registration_metadata()
     client = PlatformRegistrationClient(
         platform_base_url=base.rstrip("/"),
         hotkey=hotkey,
         timeout_seconds=PLATFORM.timeout_seconds,
     )
-    register_with_retry(client, public_url.rstrip("/"), metadata=metadata, attempts=30)
+    register_with_retry(
+        client,
+        public_url.rstrip("/"),
+        metadata=metadata,
+        attempts=attempts,
+        delay_seconds=delay_seconds,
+    )
 
 
 def _build_subtensor_client(resolved: Settings) -> SubtensorClientPort:
