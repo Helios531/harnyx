@@ -168,7 +168,7 @@ sequenceDiagram
   P->>V: GET /validator/miner-task-batches/{batch_id}/status
   V-->>P: 200 { status, total, completed, remaining, latest_sequence }
   P->>V: GET /validator/miner-task-batches/{batch_id}/runs?after_sequence=N&limit=M
-  V-->>P: 200 { items:[{ sequence, submission }], next_after_sequence, has_more }
+  V-->>P: 200 { items:[{ sequence, kind, submission?, attempt? }], next_after_sequence, has_more }
 
   P->>V: GET /validator/status
   V-->>P: 200 { status, running, ... }
