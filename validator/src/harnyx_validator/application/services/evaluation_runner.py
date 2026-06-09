@@ -37,7 +37,6 @@ from harnyx_commons.miner_task_failure_policy import (
     TIMEOUT_REVIEW_MAX_OBSERVATIONS,
     TIMEOUT_TPS_SLOWDOWN_FACTOR,
     ProviderFailureEvidence,
-    TimeoutAttributionKind,
     TimeoutObservationEvidence,
     ValidatorModelLlmBaseline,
     classify_timeout_attribution,
@@ -1139,47 +1138,24 @@ class EvaluationRunner:
             uid=artifact.uid,
             artifact_id=artifact.artifact_id,
             task=task,
-            error_code=(
-                MinerTaskErrorCode.TIMEOUT_MINER_OWNED
-                if timeout_attribution is TimeoutAttributionKind.MINER_OWNED
-                else MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE
-            ),
+            error_code=MinerTaskErrorCode.TIMEOUT_MINER_OWNED,
             error_message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
             total_tool_usage=terminal_tool_usage,
             usage=terminal_usage,
             execution_log=terminal_receipts,
             elapsed_ms=observation.session_elapsed_ms,
         )
-        if timeout_attribution is TimeoutAttributionKind.MINER_OWNED:
-            logger.error(
-                "miner task timed out with miner-owned attribution",
-                extra={
-                    "batch_id": str(batch_id),
-                    "uid": artifact.uid,
-                    "artifact_id": str(artifact.artifact_id),
-                    "task_id": str(task.task_id),
-                },
-                exc_info=exc,
-            )
-            return _submission_decision(submission)
-
-        return _validator_batch_failure_decision(
-            ValidatorBatchFailedError(
-                error_code=MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE,
-                message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
-                failure_detail=ValidatorBatchFailureDetail(
-                    error_code=MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE,
-                    error_message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
-                    occurred_at=self._clock(),
-                    artifact_id=artifact.artifact_id,
-                    task_id=task.task_id,
-                    uid=artifact.uid,
-                    exception_type=_exception_type_name(exc),
-                ),
-                completed_submissions=(submission,),
-                remaining_tasks=(),
-            )
+        logger.error(
+            "miner task timed out with miner-owned attribution",
+            extra={
+                "batch_id": str(batch_id),
+                "uid": artifact.uid,
+                "artifact_id": str(artifact.artifact_id),
+                "task_id": str(task.task_id),
+            },
+            exc_info=exc,
         )
+        return _submission_decision(submission)
 
     def _platform_tool_proxy_timeout_decision(
         self,

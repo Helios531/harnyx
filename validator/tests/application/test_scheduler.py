@@ -2386,7 +2386,7 @@ async def test_scheduler_records_retry_exhausted_internal_timeout_as_task_failur
     assert evaluation_records.records_by_batch == []
 
 
-async def test_scheduler_uses_successful_baseline_across_execution_for_timeout_inconclusive(
+async def test_scheduler_uses_successful_baseline_across_execution_for_timeout_miner_owned(
     blocking_executor: ThreadPoolExecutor,
 ) -> None:
     tasks = (_task("baseline"), _task("timeout"))
@@ -2477,14 +2477,13 @@ async def test_scheduler_uses_successful_baseline_across_execution_for_timeout_i
         ),
     )
 
-    with pytest.raises(ValidatorBatchFailedError, match="terminal timeout") as exc_info:
-        await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
+    result = await scheduler.run(batch_id=uuid4(), requested_artifacts=artifacts)
 
-    assert exc_info.value.error_code == "timeout_inconclusive"
+    assert result.completed_run_count == 2
     assert orchestrator.timeout_calls == 3
     assert evaluation_records.records_by_batch[0].score == pytest.approx(0.75)
     assert evaluation_records.records_by_batch[-1].run.details.error == EvaluationError(
-        code="timeout_inconclusive",
+        code="timeout_miner_owned",
         message="terminal timeout",
     )
 

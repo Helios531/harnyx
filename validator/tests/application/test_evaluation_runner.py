@@ -1943,7 +1943,9 @@ async def test_evaluation_runner_treats_http_client_timeoutexception_as_sandbox_
     )
 
 
-async def test_evaluation_runner_records_miner_timeout_inconclusive_after_exhaustion(tmp_path: Path) -> None:
+async def test_evaluation_runner_records_miner_timeout_miner_owned_after_slow_llm_exhaustion(
+    tmp_path: Path,
+) -> None:
     subtensor = FakeSubtensorClient()
     subtensor.validator_metadata = ValidatorNodeInfo(uid=41, version_key=None)
     session_registry = FakeSessionRegistry()
@@ -1961,7 +1963,7 @@ async def test_evaluation_runner_records_miner_timeout_inconclusive_after_exhaus
     )
     task = MinerTask(
         task_id=uuid4(),
-        query=Query(text="timeout inconclusive"),
+        query=Query(text="timeout miner owned"),
         reference_answer=ReferenceAnswer(text="reference"),
     )
     artifact = ScriptArtifactSpec(
@@ -1978,27 +1980,24 @@ async def test_evaluation_runner_records_miner_timeout_inconclusive_after_exhaus
         elapsed_ms=4000.0,
     )
 
-    with pytest.raises(ValidatorBatchFailedError, match=TERMINAL_TIMEOUT_ERROR_MESSAGE) as exc_info:
-        await runner.evaluate_artifact_with_state(
-            batch_id=uuid4(),
-            artifact=artifact,
-            tasks=(task,),
-            orchestrator=cast(TaskRunOrchestrator, orchestrator),
-            validator_model_llm_baseline=_llm_baseline(60.0),
-            timeout_observations_by_pair={},
-        )
+    result = await runner.evaluate_artifact_with_state(
+        batch_id=uuid4(),
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(TaskRunOrchestrator, orchestrator),
+        validator_model_llm_baseline=_llm_baseline(60.0),
+        timeout_observations_by_pair={},
+    )
 
-    exc = exc_info.value
-    recorded_submission = evaluation_store.records[-1]
-
-    assert exc.error_code == "timeout_inconclusive"
-    assert exc.completed_submissions == (recorded_submission,)
-    assert exc.remaining_tasks == ()
-    assert recorded_submission.run.details.error == EvaluationError(
-        code="timeout_inconclusive",
+    assert orchestrator.calls == 3
+    assert result.unresolved_tasks == ()
+    assert len(result.submissions) == 1
+    assert evaluation_store.records == list(result.submissions)
+    assert result.submissions[0].run.details.error == EvaluationError(
+        code="timeout_miner_owned",
         message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
     )
-    assert recorded_submission.session.status is SessionStatus.ERROR
+    assert result.submissions[0].session.status is SessionStatus.ERROR
 
 
 async def test_evaluate_task_with_retry_merges_completed_artifact_baseline_before_timeout_review(
@@ -2446,7 +2445,7 @@ async def test_evaluation_runner_logs_session_summary_for_scoring_retry_exhausti
     assert payload["error_code"] == "scoring_llm_retry_exhausted"
 
 
-async def test_evaluation_runner_logs_session_summary_for_timeout_validator_batch_failure(
+async def test_evaluation_runner_logs_session_summary_for_timeout_submission(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -2474,7 +2473,7 @@ async def test_evaluation_runner_logs_session_summary_for_timeout_validator_batc
     )
     task = MinerTask(
         task_id=uuid4(),
-        query=Query(text="timeout inconclusive"),
+        query=Query(text="timeout miner owned"),
         reference_answer=ReferenceAnswer(text="reference"),
     )
     artifact = ScriptArtifactSpec(
@@ -2486,23 +2485,22 @@ async def test_evaluation_runner_logs_session_summary_for_timeout_validator_batc
     )
     batch_id = uuid4()
 
-    with pytest.raises(ValidatorBatchFailedError, match="terminal timeout"):
-        await runner.evaluate_artifact_with_state(
-            batch_id=batch_id,
-            artifact=artifact,
-            tasks=(task,),
-            orchestrator=cast(
-                TaskRunOrchestrator,
-                _AlwaysMinerTimeoutOrchestrator(
-                    sessions=session_registry,
-                    receipt_log=receipt_log,
-                    total_tokens=100,
-                    elapsed_ms=4000.0,
-                ),
+    result = await runner.evaluate_artifact_with_state(
+        batch_id=batch_id,
+        artifact=artifact,
+        tasks=(task,),
+        orchestrator=cast(
+            TaskRunOrchestrator,
+            _AlwaysMinerTimeoutOrchestrator(
+                sessions=session_registry,
+                receipt_log=receipt_log,
+                total_tokens=100,
+                elapsed_ms=4000.0,
             ),
-            validator_model_llm_baseline=_llm_baseline(100.0),
-            timeout_observations_by_pair={},
-        )
+        ),
+        validator_model_llm_baseline=_llm_baseline(100.0),
+        timeout_observations_by_pair={},
+    )
 
     session_logs = [extra for message, extra in captured_logs if message == "miner-task session finished"]
     assert len(session_logs) == 1
@@ -2513,8 +2511,12 @@ async def test_evaluation_runner_logs_session_summary_for_timeout_validator_batc
     assert payload["uid"] == artifact.uid
     assert payload["attempt_count"] == 3
     assert payload["session_ms"] >= 0.0
-    assert payload["terminal_outcome"] == "validator_batch_failure"
-    assert payload["error_code"] == "timeout_inconclusive"
+    assert payload["terminal_outcome"] == "submission"
+    assert payload["error_code"] == "timeout_miner_owned"
+    assert result.submissions[0].run.details.error == EvaluationError(
+        code="timeout_miner_owned",
+        message=TERMINAL_TIMEOUT_ERROR_MESSAGE,
+    )
 
 
 async def test_evaluation_runner_records_embedding_retry_exhausted_submission(tmp_path: Path) -> None:

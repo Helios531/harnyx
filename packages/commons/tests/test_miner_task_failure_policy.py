@@ -126,7 +126,7 @@ def test_delivery_exclusion_uses_observed_at_when_completed_at_is_missing() -> N
     decision = delivery_exclusion_from_completed_pair_results(
         (
             _submission(
-                code=MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE,
+                code=MinerTaskErrorCode.SCORING_LLM_RETRY_EXHAUSTED,
                 completed_at=None,
             ),
         ),
@@ -135,6 +135,17 @@ def test_delivery_exclusion_uses_observed_at_when_completed_at_is_missing() -> N
 
     assert decision is not None
     assert decision.occurred_at == observed_at
+
+
+def test_delivery_exclusion_ignores_historical_timeout_inconclusive_pair_failures() -> None:
+    observed_at = datetime(2026, 4, 29, 4, 0, tzinfo=UTC)
+
+    decision = delivery_exclusion_from_completed_pair_results(
+        (_submission(code=MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE),),
+        observed_at=observed_at,
+    )
+
+    assert decision is None
 
 
 def test_delivery_exclusion_ignores_miner_owned_pair_failures() -> None:
@@ -189,7 +200,7 @@ def test_timeout_attribution_slow_completed_sample_blocks_fast_sample_before_exh
     )
 
 
-def test_timeout_attribution_prior_slow_sample_blocks_current_fast_sample_at_exhaustion() -> None:
+def test_timeout_attribution_prior_slow_sample_is_miner_owned_at_exhaustion() -> None:
     prior_observation = TimeoutObservationEvidence(
         successful_llm_samples=(_llm_sample(model=TEST_MODEL, ingestion_tps=100.0, generation_tps=30.0),),
         session_summary=ToolUsageSummary(),
@@ -208,7 +219,7 @@ def test_timeout_attribution_prior_slow_sample_blocks_current_fast_sample_at_exh
             prior_timeout_observations=(prior_observation, prior_observation),
             attempt_budget_exhausted=True,
         )
-        is TimeoutAttributionKind.NOT_MINER_OWNED
+        is TimeoutAttributionKind.MINER_OWNED
     )
 
 
@@ -327,7 +338,7 @@ def test_timeout_attribution_defaults_unknown_inflight_to_miner_owned_at_exhaust
     )
 
 
-def test_timeout_attribution_slow_completed_sample_beats_unknown_at_exhaustion() -> None:
+def test_timeout_attribution_slow_completed_sample_is_miner_owned_at_exhaustion() -> None:
     observation = TimeoutObservationEvidence(
         successful_llm_samples=(_llm_sample(model=TEST_MODEL, ingestion_tps=40.0, generation_tps=80.0),),
         session_summary=ToolUsageSummary(),
@@ -342,7 +353,7 @@ def test_timeout_attribution_slow_completed_sample_beats_unknown_at_exhaustion()
             prior_timeout_observations=(observation, observation),
             attempt_budget_exhausted=True,
         )
-        is TimeoutAttributionKind.NOT_MINER_OWNED
+        is TimeoutAttributionKind.MINER_OWNED
     )
 
 
@@ -480,7 +491,7 @@ def test_timeout_attribution_uses_legacy_total_tps_when_ttft_is_not_comparable()
             prior_timeout_observations=(observation, observation),
             attempt_budget_exhausted=True,
         )
-        is TimeoutAttributionKind.NOT_MINER_OWNED
+        is TimeoutAttributionKind.MINER_OWNED
     )
 
 

@@ -60,7 +60,6 @@ def test_miner_attributed_pair_error_codes_are_not_delivery_disqualifying() -> N
 
 def test_delivery_disqualifying_codes_are_not_miner_attributed() -> None:
     for code in (
-        MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE,
         MinerTaskErrorCode.SCORING_LLM_RETRY_EXHAUSTED,
         MinerTaskErrorCode.ARTIFACT_FETCH_FAILED,
         MinerTaskErrorCode.ARTIFACT_HASH_MISMATCH,
@@ -71,3 +70,11 @@ def test_delivery_disqualifying_codes_are_not_miner_attributed() -> None:
     ):
         assert is_delivery_disqualifying_validator_pair_error(code)
         assert not is_miner_attributed_pair_error(code)
+
+
+def test_timeout_inconclusive_stays_readable_but_inactive_for_new_delivery_exclusion() -> None:
+    error = EvaluationError(code="timeout_inconclusive", message="terminal timeout")
+
+    assert error.code is MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE
+    assert not is_delivery_disqualifying_validator_pair_error(MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE)
+    assert not is_miner_attributed_pair_error(MinerTaskErrorCode.TIMEOUT_INCONCLUSIVE)

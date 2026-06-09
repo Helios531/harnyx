@@ -40,7 +40,6 @@ class ProviderFailureEvidence(TypedDict):
 
 class TimeoutAttributionKind(StrEnum):
     MINER_OWNED = "miner_owned"
-    NOT_MINER_OWNED = "not_miner_owned"
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,24 +395,8 @@ def classify_timeout_attribution(
     prior_timeout_observations: tuple[TimeoutObservationEvidence, ...],
     attempt_budget_exhausted: bool = False,
 ) -> TimeoutAttributionKind | None:
-    comparable_samples = tuple(
-        sample
-        for timeout_observation in (*prior_timeout_observations, observation)
-        for sample in timeout_observation.successful_llm_samples
-        if _sample_has_comparable_speed(sample, validator_model_llm_baseline)
-    )
     if not attempt_budget_exhausted:
         return None
-    if any(_is_slow_llm_sample(sample, validator_model_llm_baseline) for sample in comparable_samples):
-        return TimeoutAttributionKind.NOT_MINER_OWNED
-    unknown_inflight_count = sum(
-        timeout_observation.unknown_inflight_llm_count
-        for timeout_observation in (*prior_timeout_observations, observation)
-    )
-    if unknown_inflight_count:
-        return TimeoutAttributionKind.MINER_OWNED
-    if any(_is_fast_llm_sample(sample, validator_model_llm_baseline) for sample in comparable_samples):
-        return TimeoutAttributionKind.MINER_OWNED
     return TimeoutAttributionKind.MINER_OWNED
 
 
@@ -423,74 +406,6 @@ def validator_model_llm_baseline(receipts: Sequence[ToolCall]) -> ValidatorModel
 
 def unknown_inflight_llm_count(receipts: Sequence[ToolCall]) -> int:
     return sum(1 for receipt in receipts if _is_unknown_inflight_llm_receipt(receipt))
-
-
-def _is_slow_llm_sample(
-    sample: SuccessfulLlmSample,
-    baseline: ValidatorModelLlmBaseline,
-) -> bool:
-    threshold = baseline.threshold_for(sample.model)
-    if threshold is None:
-        return False
-    if _has_split_speed_comparison(sample, threshold):
-        return (
-            sample.ingestion_tps is not None
-            and sample.generation_tps is not None
-            and threshold.ingestion_tps is not None
-            and threshold.generation_tps is not None
-            and (
-                sample.ingestion_tps < threshold.ingestion_tps
-                or sample.generation_tps < threshold.generation_tps
-            )
-        )
-    if sample.legacy_total_tps is None or threshold.legacy_total_tps is None:
-        return False
-    return sample.legacy_total_tps < threshold.legacy_total_tps
-
-
-def _is_fast_llm_sample(
-    sample: SuccessfulLlmSample,
-    baseline: ValidatorModelLlmBaseline,
-) -> bool:
-    threshold = baseline.threshold_for(sample.model)
-    if threshold is None:
-        return False
-    if _has_split_speed_comparison(sample, threshold):
-        return (
-            sample.ingestion_tps is not None
-            and sample.generation_tps is not None
-            and threshold.ingestion_tps is not None
-            and threshold.generation_tps is not None
-            and sample.ingestion_tps >= threshold.ingestion_tps
-            and sample.generation_tps >= threshold.generation_tps
-        )
-    if sample.legacy_total_tps is None or threshold.legacy_total_tps is None:
-        return False
-    return sample.legacy_total_tps >= threshold.legacy_total_tps
-
-
-def _sample_has_comparable_speed(
-    sample: SuccessfulLlmSample,
-    baseline: ValidatorModelLlmBaseline,
-) -> bool:
-    threshold = baseline.threshold_for(sample.model)
-    if threshold is None:
-        return False
-    if _has_split_speed_comparison(sample, threshold):
-        return True
-    return sample.legacy_total_tps is not None and threshold.legacy_total_tps is not None
-
-
-def _has_split_speed_comparison(
-    sample: SuccessfulLlmSample,
-    threshold: ValidatorLlmSpeedBaseline,
-) -> bool:
-    return (
-        sample.ingestion_tps is not None
-        and sample.generation_tps is not None
-        and threshold.ingestion_tps is not None
-        and threshold.generation_tps is not None
-    )
 
 
 def _receipt_llm_usage(receipt: ToolCall) -> _ReceiptLlmUsage | None:
