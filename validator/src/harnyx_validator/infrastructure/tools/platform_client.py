@@ -57,6 +57,13 @@ class PlatformToolProxyInvocationError(RuntimeError):
         self.error_code = error_code
 
 
+class PlatformToolProxyInterruptedError(RuntimeError):
+    """Raised when a sent platform-tool-proxy execution is interrupted before a response."""
+
+    error_code = "platform_interrupted"
+    status_code = 0
+
+
 class PlatformToolProxyProviderError(ToolProviderError):
     """Raised when platform-tool-proxy reports an upstream provider failure."""
 
@@ -392,6 +399,10 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
                 status_code=0,
                 message="platform tool proxy execution timed out while awaiting tool result",
             ) from exc
+        except (httpx.RemoteProtocolError, httpx.ReadError) as exc:
+            raise PlatformToolProxyInterruptedError(
+                "platform tool proxy execution interrupted before a response"
+            ) from exc
         except httpx.HTTPError as exc:
             raise PlatformToolProxyInvocationError(
                 status_code=0,
@@ -400,6 +411,10 @@ class AsyncPlatformToolProxyPlatformClient(PlatformToolProxyPlatformPort):
             ) from exc
         if response.status_code != httpx.codes.OK:
             error_code = _platform_error_code(response)
+            if error_code == "platform_interrupted":
+                raise PlatformToolProxyInterruptedError(
+                    _platform_error_message(response) or "platform tool proxy execution interrupted"
+                )
             if error_code == "tool_timeout":
                 raise PlatformToolProxyToolTimeoutError(
                     status_code=response.status_code,
@@ -572,6 +587,7 @@ __all__ = [
     "HttpPlatformClient",
     "PlatformClientError",
     "PlatformToolProxyBudgetExceededError",
+    "PlatformToolProxyInterruptedError",
     "PlatformToolProxyInvocationError",
     "PlatformToolProxyProviderError",
     "PlatformToolProxyToolTimeoutError",

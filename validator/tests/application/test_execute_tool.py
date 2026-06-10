@@ -28,6 +28,7 @@ from harnyx_validator.application.evaluate_task_run import UsageSummarizer
 from harnyx_validator.domain.exceptions import BudgetExceededError
 from harnyx_validator.infrastructure.tools.platform_client import (
     PlatformToolProxyBudgetExceededError,
+    PlatformToolProxyInterruptedError,
     PlatformToolProxyInvocationError,
     PlatformToolProxyProviderError,
     PlatformToolProxyToolTimeoutError,
@@ -853,6 +854,12 @@ async def test_execute_tool_records_failed_receipt_before_reraising_generic_erro
             ToolCallOutcome.TIMEOUT,
             "tool_timeout",
             "408",
+        ),
+        (
+            PlatformToolProxyInterruptedError("platform tool proxy execution interrupted before a response"),
+            ToolCallOutcome.INTERNAL_ERROR,
+            "platform_interrupted",
+            "0",
         ),
         (
             PlatformToolProxyBudgetExceededError(status_code=400, message="budget exhausted"),

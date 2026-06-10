@@ -17,6 +17,7 @@ from harnyx_validator.infrastructure.tools.platform_client import (
     HttpPlatformClient,
     PlatformClientError,
     PlatformToolProxyBudgetExceededError,
+    PlatformToolProxyInterruptedError,
     PlatformToolProxyInvocationError,
     PlatformToolProxyProviderError,
     PlatformToolProxyToolTimeoutError,
@@ -502,10 +503,100 @@ async def test_platform_tool_proxy_execute_maps_read_timeout_to_tool_timeout() -
 
 
 @pytest.mark.anyio("asyncio")
-async def test_platform_tool_proxy_execute_keeps_connect_timeout_validator_owned() -> None:
+@pytest.mark.parametrize(
+    ("exception_type", "message"),
+    [
+        (httpx.RemoteProtocolError, "server disconnected without response"),
+        (httpx.ReadError, "response stream closed"),
+    ],
+)
+async def test_platform_tool_proxy_execute_maps_response_side_interruption_to_platform_interrupted(
+    exception_type: type[httpx.HTTPError],
+    message: str,
+) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST" and request.url.path == "/v1/platform-tool-proxy/tools/execute":
-            raise httpx.ConnectTimeout("platform endpoint unavailable", request=request)
+            raise exception_type(message, request=request)
+        return httpx.Response(status_code=404)
+
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local",
+        hotkey=_keypair(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(PlatformToolProxyInterruptedError, match="interrupted before a response") as exc_info:
+        await client.execute_platform_tool_proxy_tool(
+            token="proxy-token",  # noqa: S106 - fixed test-only proxy token
+            uid=7,
+            artifact_id=uuid4(),
+            task_id=uuid4(),
+            validator_session_id=uuid4(),
+            attempt_number=1,
+            receipt_id=str(uuid4()),
+            tool="search_web",
+            args=(),
+            kwargs={"provider": "parallel", "search_queries": ["harnyx"]},
+            transport_timeout_seconds=11.0,
+        )
+
+    assert exc_info.value.status_code == 0
+    assert exc_info.value.error_code == "platform_interrupted"
+
+
+@pytest.mark.anyio("asyncio")
+async def test_platform_tool_proxy_execute_maps_platform_interrupted_error_code_to_interrupted_error() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/platform-tool-proxy/tools/execute":
+            return httpx.Response(
+                status_code=400,
+                json={
+                    "error_code": "platform_interrupted",
+                    "message": "platform tool proxy execution interrupted before completion",
+                },
+            )
+        return httpx.Response(status_code=404)
+
+    client = AsyncPlatformToolProxyPlatformClient(
+        base_url="https://mock.local",
+        hotkey=_keypair(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(PlatformToolProxyInterruptedError, match="interrupted before completion") as exc_info:
+        await client.execute_platform_tool_proxy_tool(
+            token="proxy-token",  # noqa: S106 - fixed test-only proxy token
+            uid=7,
+            artifact_id=uuid4(),
+            task_id=uuid4(),
+            validator_session_id=uuid4(),
+            attempt_number=1,
+            receipt_id=str(uuid4()),
+            tool="search_web",
+            args=(),
+            kwargs={"provider": "parallel", "search_queries": ["harnyx"]},
+            transport_timeout_seconds=11.0,
+        )
+
+    assert exc_info.value.status_code == 0
+    assert exc_info.value.error_code == "platform_interrupted"
+
+
+@pytest.mark.anyio("asyncio")
+@pytest.mark.parametrize(
+    ("exception_type", "message"),
+    [
+        (httpx.ConnectTimeout, "platform endpoint unavailable"),
+        (httpx.WriteError, "request body write failed"),
+    ],
+)
+async def test_platform_tool_proxy_execute_keeps_pre_response_start_failures_validator_owned(
+    exception_type: type[httpx.HTTPError],
+    message: str,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/v1/platform-tool-proxy/tools/execute":
+            raise exception_type(message, request=request)
         return httpx.Response(status_code=404)
 
     client = AsyncPlatformToolProxyPlatformClient(

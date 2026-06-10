@@ -523,6 +523,15 @@ def test_platform_tool_proxy_control_receipt_is_not_timeout_evidence() -> None:
     assert not is_platform_tool_proxy_timeout_receipt(receipt)
 
 
+def test_platform_tool_proxy_interrupted_receipt_is_not_timeout_evidence() -> None:
+    receipt = _tool_call(
+        outcome=ToolCallOutcome.INTERNAL_ERROR,
+        extra={"platform_tool_proxy_error_code": "platform_interrupted"},
+    )
+
+    assert not is_platform_tool_proxy_timeout_receipt(receipt)
+
+
 def test_uncaught_platform_tool_proxy_timeout_requires_timeout_receipt_and_tool_failure_shape() -> None:
     assert is_uncaught_platform_tool_proxy_timeout_sandbox_invocation(
         detail_code="UnhandledException",

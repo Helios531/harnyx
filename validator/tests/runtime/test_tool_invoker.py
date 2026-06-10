@@ -19,6 +19,7 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_commons.platform_tool_proxy import platform_tool_proxy_provider_timeout_seconds
 from harnyx_commons.tools.executor import ToolInvocationOutput
 from harnyx_commons.tools.provider_billing import BillingAwareSearchResponse, ProviderBillingMetadata
 from harnyx_commons.tools.runtime_invoker import (
@@ -887,7 +888,7 @@ async def test_runtime_invoker_routes_llm_chat_from_first_positional_payload() -
     assert recorded.temperature == 0.2
 
 
-async def test_runtime_invoker_routes_llm_chat_timeout_without_changing_provider_timeout() -> None:
+async def test_runtime_invoker_routes_llm_chat_short_timeout_keeps_provider_default() -> None:
     stub_chutes = StubChutesProvider()
     invoker = RuntimeToolInvoker(
         FakeReceiptLog(),
@@ -911,6 +912,32 @@ async def test_runtime_invoker_routes_llm_chat_timeout_without_changing_provider
     assert isinstance(invocation_output, ToolInvocationOutput)
     recorded = stub_chutes.calls[0]
     assert recorded.timeout_seconds == pytest.approx(120.0)
+
+
+async def test_runtime_invoker_routes_llm_chat_long_timeout_to_provider_request() -> None:
+    stub_chutes = StubChutesProvider()
+    invoker = RuntimeToolInvoker(
+        FakeReceiptLog(),
+        llm_provider=stub_chutes,
+        llm_provider_name="chutes",
+        allowed_models=ALLOWED_TOOL_MODELS,
+    )
+    model = CHUTES_TOOL_MODEL
+
+    invocation_output = await _invoke(
+        invoker,
+        "llm_chat",
+        kwargs={
+            "provider": "chutes",
+            "messages": [{"role": "user", "content": "hi"}],
+            "model": model,
+            "timeout": 180,
+        },
+    )
+
+    assert isinstance(invocation_output, ToolInvocationOutput)
+    recorded = stub_chutes.calls[0]
+    assert recorded.timeout_seconds == pytest.approx(platform_tool_proxy_provider_timeout_seconds(180.0))
 
 
 async def test_runtime_invoker_enforces_llm_chat_timeout() -> None:

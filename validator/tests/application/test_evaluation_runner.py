@@ -2744,6 +2744,7 @@ async def test_evaluation_runner_platform_proxy_control_categories_fail_validato
     [
         "provider_failed",
         "tool_timeout",
+        "platform_interrupted",
         "budget_exhausted",
         "concurrency_exhausted",
         "miner_credential_missing",

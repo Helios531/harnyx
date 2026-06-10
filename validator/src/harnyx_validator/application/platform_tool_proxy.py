@@ -10,6 +10,7 @@ from threading import Lock
 from uuid import UUID
 
 from harnyx_commons.json_types import JsonValue
+from harnyx_commons.platform_tool_proxy import PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS
 from harnyx_commons.tools.executor import ToolInvocationContext, ToolInvocationOutput, ToolInvoker
 from harnyx_commons.tools.types import ToolName, is_search_tool
 from harnyx_validator.application.ports.platform import (
@@ -17,8 +18,6 @@ from harnyx_validator.application.ports.platform import (
     PlatformToolProxyPlatformPort,
     PlatformToolProxyTokenExpiredError,
 )
-
-PLATFORM_TOOL_PROXY_EXECUTE_TRANSPORT_TIMEOUT_SECONDS = 350.0
 
 
 @dataclass(frozen=True, slots=True)

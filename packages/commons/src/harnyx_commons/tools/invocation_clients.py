@@ -20,6 +20,7 @@ from harnyx_commons.llm.provider_factory import (
 )
 from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
+from harnyx_commons.platform_tool_proxy import platform_tool_proxy_provider_timeout_seconds
 from harnyx_commons.tools.desearch import DeSearchClient
 from harnyx_commons.tools.parallel import ParallelClient
 from harnyx_commons.tools.ports import WebSearchProviderPort
@@ -122,6 +123,7 @@ def build_miner_paid_web_search_provider(
     provider: SearchProviderName | str,
     api_key: SecretStr | str,
     llm_settings: LlmSettings,
+    timeout: float | None = None,
 ) -> WebSearchProviderPort:
     """Build an uncached miner-paid search provider from an explicit miner credential."""
 
@@ -131,14 +133,14 @@ def build_miner_paid_web_search_provider(
         return DeSearchClient(
             base_url=DESEARCH.base_url,
             api_key=explicit_key,
-            timeout=DESEARCH.timeout_seconds,
+            timeout=_effective_client_timeout(DESEARCH.timeout_seconds, timeout),
             max_concurrent=None,
         )
     if provider_name == "parallel":
         return ParallelClient(
             base_url=llm_settings.parallel_base_url,
             api_key=explicit_key,
-            timeout=PARALLEL.timeout_seconds,
+            timeout=_effective_client_timeout(PARALLEL.timeout_seconds, timeout),
             max_concurrent=None,
         )
     raise AssertionError(f"unsupported parsed miner-paid search provider: {provider_name}")
@@ -165,6 +167,12 @@ def _explicit_api_key_value(api_key: SecretStr | str, *, provider: str) -> str:
     if not normalized:
         raise ValueError(f"{provider} miner-paid API key must be provided")
     return normalized
+
+
+def _effective_client_timeout(default_timeout: float, requested_timeout: float | None) -> float:
+    if requested_timeout is None:
+        return default_timeout
+    return max(default_timeout, platform_tool_proxy_provider_timeout_seconds(requested_timeout))
 
 
 class LazyLlmProvider(LlmProviderPort):

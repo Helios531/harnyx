@@ -17,6 +17,7 @@ from harnyx_commons.llm.schema import (
     LlmResponse,
     LlmUsage,
 )
+from harnyx_commons.platform_tool_proxy import platform_tool_proxy_provider_timeout_seconds
 from harnyx_commons.tools import invocation_clients
 from harnyx_commons.tools.invocation_clients import build_tool_invocation_clients
 
@@ -306,6 +307,66 @@ def test_miner_paid_parallel_provider_uses_explicit_key_without_shared_concurren
             "base_url": "https://parallel.example",
             "api_key": "miner-parallel-key",
             "timeout": invocation_clients.PARALLEL.timeout_seconds,
+            "max_concurrent": None,
+        }
+    ]
+
+
+def test_miner_paid_search_provider_uses_effective_timeout_when_above_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _FakeParallelClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.append(kwargs)
+
+    monkeypatch.setattr(invocation_clients, "ParallelClient", _FakeParallelClient)
+
+    provider = invocation_clients.build_miner_paid_web_search_provider(
+        provider="parallel",
+        api_key=SecretStr("miner-parallel-key"),
+        llm_settings=LlmSettings.model_construct(
+            parallel_base_url="https://parallel.example",
+        ),
+        timeout=180.0,
+    )
+
+    assert provider is not None
+    assert captured == [
+        {
+            "base_url": "https://parallel.example",
+            "api_key": "miner-parallel-key",
+            "timeout": platform_tool_proxy_provider_timeout_seconds(180.0),
+            "max_concurrent": None,
+        }
+    ]
+
+
+def test_miner_paid_search_provider_keeps_default_when_effective_timeout_is_shorter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _FakeDeSearchClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.append(kwargs)
+
+    monkeypatch.setattr(invocation_clients, "DeSearchClient", _FakeDeSearchClient)
+
+    provider = invocation_clients.build_miner_paid_web_search_provider(
+        provider="desearch",
+        api_key=SecretStr("miner-desearch-key"),
+        llm_settings=LlmSettings.model_construct(),
+        timeout=5.0,
+    )
+
+    assert provider is not None
+    assert captured == [
+        {
+            "base_url": invocation_clients.DESEARCH.base_url,
+            "api_key": "miner-desearch-key",
+            "timeout": invocation_clients.DESEARCH.timeout_seconds,
             "max_concurrent": None,
         }
     ]

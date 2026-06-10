@@ -15,7 +15,6 @@ from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, ValidationErr
 from pydantic import JsonValue as PydanticJsonValue
 
 from harnyx_commons.application.ports.receipt_log import ReceiptLogPort
-from harnyx_commons.clients import DESEARCH, PARALLEL
 from harnyx_commons.domain.tool_call import ToolExecutionFacts
 from harnyx_commons.errors import ToolInvocationTimeoutError, ToolProviderError
 from harnyx_commons.json_types import JsonObject, JsonValue
@@ -45,6 +44,11 @@ from harnyx_commons.llm.tool_models import (
     ToolModelName,
     parse_miner_selected_llm_provider_model,
 )
+from harnyx_commons.platform_tool_proxy import (
+    PLATFORM_TOOL_PROXY_LLM_CHAT_DEFAULT_TIMEOUT_SECONDS,
+    PLATFORM_TOOL_PROXY_SEARCH_TOOL_DEFAULT_TIMEOUT_SECONDS,
+    platform_tool_proxy_provider_timeout_seconds,
+)
 from harnyx_commons.tools.dto import tool_payload_from_args_kwargs
 from harnyx_commons.tools.executor import ToolInvocationContext, ToolInvocationOutput, ToolInvoker
 from harnyx_commons.tools.ports import BillingAwareWebSearchProviderPort, WebSearchProviderPort
@@ -66,8 +70,8 @@ from harnyx_commons.tools.types import TOOL_NAMES, SearchToolName, ToolInvocatio
 from harnyx_commons.tools.usage_tracker import ToolCallUsage  # noqa: F401 - compatibility
 
 MINER_SANDBOX_TOOL_NAMES: tuple[ToolName, ...] = tuple(sorted(TOOL_NAMES))
-DEFAULT_TOOL_LLM_TIMEOUT_SECONDS = 120.0
-DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS = max(DESEARCH.timeout_seconds, PARALLEL.timeout_seconds)
+DEFAULT_TOOL_LLM_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_LLM_CHAT_DEFAULT_TIMEOUT_SECONDS
+DEFAULT_SEARCH_TOOL_TIMEOUT_SECONDS = PLATFORM_TOOL_PROXY_SEARCH_TOOL_DEFAULT_TIMEOUT_SECONDS
 TInvocationResult = TypeVar("TInvocationResult")
 
 
@@ -193,6 +197,12 @@ def _effective_timeout_from_payload(payload: JsonObject, *, default: float) -> f
     if not math.isfinite(timeout) or timeout <= 0:
         return default
     return timeout
+
+
+def _provider_request_timeout_seconds(*, default: float, effective_timeout: float | None) -> float:
+    if effective_timeout is None:
+        return default
+    return max(default, platform_tool_proxy_provider_timeout_seconds(effective_timeout))
 
 
 class RuntimeToolInvoker(ToolInvoker):
@@ -520,7 +530,10 @@ class RuntimeToolInvoker(ToolInvoker):
             tools=tools,
             tool_choice=invocation.tool_choice,
             include=invocation.include,
-            timeout_seconds=DEFAULT_TOOL_LLM_TIMEOUT_SECONDS,
+            timeout_seconds=_provider_request_timeout_seconds(
+                default=DEFAULT_TOOL_LLM_TIMEOUT_SECONDS,
+                effective_timeout=invocation.timeout,
+            ),
             thinking=invocation.thinking.to_schema() if invocation.thinking is not None else None,
             use_case="tool_runtime_invoker",
         )
