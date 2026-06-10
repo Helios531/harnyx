@@ -25,7 +25,7 @@ These diagrams are intentionally **linear** (no `alt` / `par` / `loop`) to keep 
 |--------|------|------|--------|------|
 | Subnet runtime | Miner config | configure retry count; upload, read, or delete redacted provider credential status | Miner ↔ Platform | `Authorization: Bittensor ...` |
 | Subnet runtime | Miner script upload | upload script artifact | Miner ↔ Platform | `Authorization: Bittensor ...` |
-| Subnet runtime | Miner-task batch | forward batch + run sandbox + poll status and drain run pages | Platform ↔ Validator ↔ Sandbox | `Authorization: Bittensor ...` + `x-platform-token` + `x-session-id` + `x-host-container-url` |
+| Subnet runtime | Miner-task batch | forward batch to allowlisted validators + run sandbox + poll status and drain run pages | Platform ↔ Validator ↔ Sandbox | `Authorization: Bittensor ...` + `x-platform-token` + `x-session-id` + `x-host-container-url` |
 | Subnet runtime | Tool execution | agent invokes host tools | Sandbox agent ↔ Tool host | `x-platform-token` + `x-session-id` |
 | Subnet ops | Validator registration and weights | register API base URL; read weights | Validator ↔ Platform | `Authorization: Bittensor ...` |
 
@@ -107,6 +107,7 @@ sequenceDiagram
 | **Actors** | Platform ↔ Validator API ↔ Sandbox |
 | **Auth** | Platform↔Validator is Bittensor-signed; Validator↔Sandbox uses `x-platform-token` + `x-session-id` + `x-host-container-url`. |
 | **Happy path** | forward batch → fetch artifacts → run `query` → poll status → drain run pages |
+| **Dispatch gate** | Platform forwards only to registered, healthy, metagraph-authorized validators that have a `validator_allowlist_entry` row for `miner_task_batch_delivery`. |
 
 #### 1) Platform forwards a batch to validators
 
@@ -228,6 +229,7 @@ These flows are about validator lifecycle and platform coordination.
 | **Actors** | Validator ↔ Platform |
 | **Auth** | `Authorization: Bittensor ss58="...",sig="..."` |
 | **Happy path** | `POST /v1/validators/register` → `GET /v1/weights` |
+| **Allowlist** | The batch-delivery allowlist does not gate registration or `GET /v1/weights`. |
 
 ```mermaid
 sequenceDiagram
