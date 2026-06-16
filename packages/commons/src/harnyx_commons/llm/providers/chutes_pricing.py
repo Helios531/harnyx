@@ -14,6 +14,7 @@ from harnyx_commons.llm.schema import LlmUsage
 _DEFAULT_TTL_SECONDS = 3600.0
 
 CHUTES_STATIC_PRICING: Mapping[str, ModelPricing] = {
+    "moonshotai/Kimi-K2.5-TEE": ModelPricing(0.44, 2.00, 0.0),
     "deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(0.28, 0.42, 0.0),
     "zai-org/GLM-5-TEE": ModelPricing(0.95, 2.55, 0.0),
     "Qwen/Qwen3.6-27B-TEE": ModelPricing(0.30, 2.00, 0.0),

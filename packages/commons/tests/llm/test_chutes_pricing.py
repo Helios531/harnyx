@@ -38,6 +38,23 @@ async def test_chutes_pricing_cache_falls_back_to_hard_coded_rates_when_cache_un
     assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"
 
 
+async def test_chutes_pricing_cache_prices_kimi_validator_judge_model() -> None:
+    cache = ChutesModelPricingCache()
+    usage = LlmUsage(
+        prompt_tokens=1_000,
+        completion_tokens=2_000,
+        reasoning_tokens=3_000,
+        total_tokens=6_000,
+    )
+
+    actual_cost = await cache.price(model="moonshotai/Kimi-K2.5-TEE", usage=usage)
+
+    assert actual_cost.cost_usd == pytest.approx(0.01044)
+    assert actual_cost.provider == "chutes"
+    assert actual_cost.evidence["settlement_source"] == "static_pricing"
+    assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"
+
+
 async def test_chutes_pricing_cache_falls_back_to_hard_coded_rates_when_model_missing() -> None:
     cache = ChutesModelPricingCache(cached_pricing={"other/model": ModelPricing(1.0, 1.0, 0.0)})
     usage = LlmUsage(prompt_tokens=1_000, completion_tokens=2_000, total_tokens=3_000)
