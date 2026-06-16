@@ -1,4 +1,4 @@
-"""Actual-cost pricing for Chutes miner-selected LLM calls."""
+"""Actual-cost pricing for Chutes LLM calls."""
 
 from __future__ import annotations
 
@@ -8,20 +8,16 @@ from dataclasses import dataclass
 from typing import Literal, cast
 
 from harnyx_commons.json_types import JsonObject
-from harnyx_commons.llm.pricing import ModelPricing
+from harnyx_commons.llm.pricing import MINER_TOOL_LLM_PRICING, ModelPricing
+from harnyx_commons.llm.provider_types import CHUTES_PROVIDER
 from harnyx_commons.llm.schema import LlmUsage
 
 _DEFAULT_TTL_SECONDS = 3600.0
 
 CHUTES_STATIC_PRICING: Mapping[str, ModelPricing] = {
+    **MINER_TOOL_LLM_PRICING[CHUTES_PROVIDER],
     "moonshotai/Kimi-K2.5-TEE": ModelPricing(0.44, 2.00, 0.0),
-    "deepseek-ai/DeepSeek-V3.2-TEE": ModelPricing(0.28, 0.42, 0.0),
-    "zai-org/GLM-5-TEE": ModelPricing(0.95, 2.55, 0.0),
-    "Qwen/Qwen3.6-27B-TEE": ModelPricing(0.30, 2.00, 0.0),
-    "google/gemma-4-31B-turbo-TEE": ModelPricing(0.15, 0.42, 0.0),
 }
-
-CHUTES_ACTUAL_COST_FALLBACK_PRICING = CHUTES_STATIC_PRICING
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,7 +186,6 @@ def _optional_text(value: object) -> str | None:
 
 
 __all__ = [
-    "CHUTES_ACTUAL_COST_FALLBACK_PRICING",
     "CHUTES_STATIC_PRICING",
     "ChutesActualCost",
     "ChutesModelPricingCache",

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from harnyx_commons.llm.pricing import ModelPricing
-from harnyx_commons.llm.providers.chutes_pricing import ChutesModelPricingCache
+from harnyx_commons.llm.pricing import MINER_TOOL_LLM_PRICING, ModelPricing
+from harnyx_commons.llm.provider_types import CHUTES_PROVIDER
+from harnyx_commons.llm.providers.chutes_pricing import CHUTES_STATIC_PRICING, ChutesModelPricingCache
 from harnyx_commons.llm.schema import LlmUsage
 
 pytestmark = pytest.mark.anyio("asyncio")
@@ -32,7 +33,7 @@ async def test_chutes_pricing_cache_falls_back_to_hard_coded_rates_when_cache_un
 
     actual_cost = await cache.price(model="Qwen/Qwen3.6-27B-TEE", usage=usage)
 
-    assert actual_cost.cost_usd == pytest.approx(0.0043)
+    assert actual_cost.cost_usd == pytest.approx(0.0045)
     assert actual_cost.provider == "chutes"
     assert actual_cost.evidence["settlement_source"] == "static_pricing"
     assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"
@@ -49,10 +50,16 @@ async def test_chutes_pricing_cache_prices_kimi_validator_judge_model() -> None:
 
     actual_cost = await cache.price(model="moonshotai/Kimi-K2.5-TEE", usage=usage)
 
+    assert "moonshotai/Kimi-K2.5-TEE" in CHUTES_STATIC_PRICING
     assert actual_cost.cost_usd == pytest.approx(0.01044)
     assert actual_cost.provider == "chutes"
     assert actual_cost.evidence["settlement_source"] == "static_pricing"
     assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"
+
+
+def test_chutes_static_pricing_uses_miner_advertised_rates_for_allowed_models() -> None:
+    for model, pricing in MINER_TOOL_LLM_PRICING[CHUTES_PROVIDER].items():
+        assert CHUTES_STATIC_PRICING[model] == pricing
 
 
 async def test_chutes_pricing_cache_falls_back_to_hard_coded_rates_when_model_missing() -> None:
@@ -61,7 +68,7 @@ async def test_chutes_pricing_cache_falls_back_to_hard_coded_rates_when_model_mi
 
     actual_cost = await cache.price(model="google/gemma-4-31B-turbo-TEE", usage=usage)
 
-    assert actual_cost.cost_usd == pytest.approx(0.00099)
+    assert actual_cost.cost_usd == pytest.approx(0.00089)
     assert actual_cost.evidence["settlement_source"] == "static_pricing"
     assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"
 
@@ -73,6 +80,6 @@ async def test_chutes_pricing_cache_updated_empty_snapshot_uses_fallback_without
 
     actual_cost = await cache.price(model="google/gemma-4-31B-turbo-TEE", usage=usage)
 
-    assert actual_cost.cost_usd == pytest.approx(0.00099)
+    assert actual_cost.cost_usd == pytest.approx(0.00089)
     assert actual_cost.evidence["settlement_source"] == "static_pricing"
     assert actual_cost.evidence["pricing_origin"] == "chutes_repo_rates"

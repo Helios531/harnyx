@@ -26,7 +26,6 @@ from harnyx_commons.llm.pricing import (
 )
 from harnyx_commons.llm.provider import LlmProviderError, LlmProviderPort, LlmRetryExhaustedError
 from harnyx_commons.llm.provider_types import CHUTES_PROVIDER, OPENROUTER_PROVIDER
-from harnyx_commons.llm.providers.chutes_pricing import CHUTES_STATIC_PRICING
 from harnyx_commons.llm.schema import (
     LlmChoice,
     LlmChoiceMessage,
@@ -321,10 +320,7 @@ class RuntimeToolInvoker(ToolInvoker):
                         }
                         for model, rates in model_pricing.items()
                     }
-                    for provider, model_pricing in {
-                        CHUTES_PROVIDER: CHUTES_STATIC_PRICING,
-                        OPENROUTER_PROVIDER: MINER_TOOL_LLM_PRICING[OPENROUTER_PROVIDER],
-                    }.items()
+                    for provider, model_pricing in MINER_TOOL_LLM_PRICING.items()
                 },
             }
 

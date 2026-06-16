@@ -374,7 +374,7 @@ async def test_chutes_provider_attaches_actual_cost_from_static_pricing() -> Non
 
     assert response.metadata is not None
     assert response.metadata["actual_cost_provider"] == "chutes"
-    assert response.metadata["actual_cost_usd"] == pytest.approx(0.0043)
+    assert response.metadata["actual_cost_usd"] == pytest.approx(0.0045)
     assert response.metadata["actual_cost_evidence"]["settlement_source"] == "static_pricing"
     assert response.metadata["actual_cost_evidence"]["pricing_origin"] == "chutes_repo_rates"
 
