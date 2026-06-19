@@ -148,6 +148,24 @@ async def test_bedrock_adapter_uses_provider_specific_kimi_alias() -> None:
     assert delegate.requests[0].model == "moonshotai.kimi-k2.5"
 
 
+async def test_bedrock_adapter_uses_provider_specific_glm5_alias() -> None:
+    delegate = StubProvider()
+    provider = LlmProviderAdapter(provider_name="bedrock", delegate=delegate)
+
+    request = LlmRequest(
+        provider="bedrock",
+        model="zai-org/GLM-5-TEE",
+        messages=(),
+        temperature=None,
+        max_output_tokens=None,
+        output_mode="text",
+    )
+
+    await provider.invoke(request)
+
+    assert delegate.requests[0].model == "zai.glm-5"
+
+
 async def test_bedrock_adapter_uses_provider_specific_minimax_m2_5_alias() -> None:
     delegate = StubProvider()
     provider = LlmProviderAdapter(provider_name="bedrock", delegate=delegate)

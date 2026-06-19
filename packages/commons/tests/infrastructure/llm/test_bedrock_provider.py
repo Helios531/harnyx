@@ -9,7 +9,7 @@ import pytest
 from botocore.exceptions import ClientError, EventStreamError
 from pydantic import BaseModel, ValidationError
 
-from harnyx_commons.llm.provider import LlmRetryExhaustedError
+from harnyx_commons.llm.provider import LlmProviderError, LlmRetryExhaustedError
 from harnyx_commons.llm.providers.bedrock import BedrockLlmProvider
 from harnyx_commons.llm.providers.bedrock_codec import (
     BEDROCK_STREAM_EVENT_ADAPTER,
@@ -202,9 +202,7 @@ async def test_bedrock_provider_ttft_uses_first_reasoning_delta(
     assert ttft_records
     assert any(result for _, _, result in produced_output_events)
     first_output_event, first_output_raw_event, first_output_result = next(
-        (event, raw_event, result)
-        for event, raw_event, result in produced_output_events
-        if result
+        (event, raw_event, result) for event, raw_event, result in produced_output_events if result
     )
     assert first_output_result is True
     assert isinstance(first_output_event, ContentBlockDeltaEvent)
@@ -370,9 +368,7 @@ def test_bedrock_stream_event_adapter_rejects_invalid_multi_key_shape() -> None:
 
 def test_bedrock_stream_event_adapter_rejects_unknown_message_start_keys() -> None:
     with pytest.raises(ValidationError):
-        BEDROCK_STREAM_EVENT_ADAPTER.validate_python(
-            {"messageStart": {"role": "assistant", "unexpected": "x"}}
-        )
+        BEDROCK_STREAM_EVENT_ADAPTER.validate_python({"messageStart": {"role": "assistant", "unexpected": "x"}})
 
 
 def test_bedrock_stream_event_adapter_rejects_unknown_error_payload_keys() -> None:
@@ -500,7 +496,7 @@ def test_bedrock_stream_event_dispatch_delegates_stream_error_behavior() -> None
         ({"throttlingException": {"message": "slow down"}}, ThrottlingExceptionEvent),
         ({"serviceUnavailableException": {"message": "outage"}}, ServiceUnavailableExceptionEvent),
         ({"modelStreamErrorException": {"message": "stream exploded"}}, ModelStreamErrorExceptionEvent),
-        ({"internalServerException": {"message": "internal"}} , InternalServerExceptionEvent),
+        ({"internalServerException": {"message": "internal"}}, InternalServerExceptionEvent),
     ],
 )
 def test_bedrock_stream_event_adapter_parses_stream_error_variants(
@@ -513,26 +509,31 @@ def test_bedrock_stream_event_adapter_parses_stream_error_variants(
 
 
 @pytest.mark.parametrize(
-    ("raw_event", "expected_reason"),
+    ("raw_event", "expected_error", "expected_reason"),
     [
         (
             {"validationException": {"message": "schema mismatch"}},
+            LlmProviderError,
             "client_error:ValidationException:400:schema mismatch",
         ),
         (
             {"throttlingException": {"message": "slow down"}},
+            LlmRetryExhaustedError,
             "client_error:ThrottlingException:429:slow down",
         ),
         (
             {"serviceUnavailableException": {"message": "outage"}},
+            LlmRetryExhaustedError,
             "client_error:ServiceUnavailableException:503:outage",
         ),
         (
             {"modelStreamErrorException": {"message": "stream exploded"}},
+            LlmRetryExhaustedError,
             "client_error:ModelStreamErrorException:424:stream exploded",
         ),
         (
             {"internalServerException": {"message": "internal"}},
+            LlmRetryExhaustedError,
             "client_error:InternalServerException:500:internal",
         ),
     ],
@@ -540,6 +541,7 @@ def test_bedrock_stream_event_adapter_parses_stream_error_variants(
 async def test_bedrock_provider_preserves_all_stream_error_mappings(
     monkeypatch: pytest.MonkeyPatch,
     raw_event: dict[str, object],
+    expected_error: type[Exception],
     expected_reason: str,
 ) -> None:
     _patch_session(
@@ -551,7 +553,7 @@ async def test_bedrock_provider_preserves_all_stream_error_mappings(
     )
     provider = _provider()
 
-    with pytest.raises(LlmRetryExhaustedError, match=expected_reason):
+    with pytest.raises(expected_error, match=expected_reason):
         await provider.invoke(_base_request())
 
 
@@ -586,7 +588,7 @@ async def test_bedrock_provider_rejects_unsupported_delta_variants(
     )
     provider = _provider()
 
-    with pytest.raises(LlmRetryExhaustedError, match=message):
+    with pytest.raises(LlmProviderError, match=message):
         await provider.invoke(_base_request())
 
 
@@ -692,6 +694,24 @@ async def test_bedrock_provider_accepts_native_minimax_m2_5_model_id(monkeypatch
     )
     provider = _provider()
     request = replace(_base_request(), model="minimax.minimax-m2.5")
+
+    response = await provider.invoke(request)
+
+    assert response.raw_text == "56"
+
+
+async def test_bedrock_provider_accepts_native_glm5_model_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_session(
+        monkeypatch,
+        events=(
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "56"}}},
+            {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": {"inputTokens": 5, "outputTokens": 2, "totalTokens": 7}}},
+        ),
+    )
+    provider = _provider()
+    request = replace(_base_request(), model="zai.glm-5")
 
     response = await provider.invoke(request)
 
@@ -867,7 +887,6 @@ def test_bedrock_provider_classifies_lowercase_eventstream_internal_error_as_ret
 
     assert retryable is True
     assert (
-        reason
-        == "client_error:internalServerException:None:"
+        reason == "client_error:internalServerException:None:"
         "The system encountered an unexpected error during processing. Try your request again."
     )

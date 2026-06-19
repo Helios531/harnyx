@@ -20,7 +20,7 @@ from harnyx_commons.config.vertex import VertexSettings
 from harnyx_commons.domain.session import Session, SessionStatus, SessionUsage
 from harnyx_commons.domain.tool_call import ToolCallOutcome
 from harnyx_commons.errors import BudgetExceededError, ConcurrencyLimitError, ToolProviderError
-from harnyx_commons.llm.routing import ResolvedLlmRoute
+from harnyx_commons.llm.routing import ResolvedLlmRoute, RoutedLlmProvider
 from harnyx_commons.tools.dto import ToolInvocationRequest
 from harnyx_commons.tools.types import ToolName
 from harnyx_validator.application.ports.platform import PlatformToolProxyGrant
@@ -41,6 +41,11 @@ from harnyx_validator.runtime.settings import Settings
 
 DEFAULT_LIMIT_LLM_MODEL = "openai/gpt-oss-20b"
 TEST_SESSION_TOKEN = "validator-session-token"  # noqa: S105
+
+
+def _routed_surface(provider: object) -> str:
+    assert isinstance(provider, RoutedLlmProvider)
+    return provider._surface
 
 
 class _ProviderFailingPlatformToolProxyClient:
@@ -165,8 +170,8 @@ def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.Mon
 
     assert clients.search_client is None
     assert clients.tool_llm_provider is None
-    assert clients.scoring_llm_provider == "provider:vertex"
-    assert clients.similarity_llm_provider == "provider:vertex"
+    assert _routed_surface(clients.scoring_llm_provider) == "scoring"
+    assert _routed_surface(clients.similarity_llm_provider) == "duplication_detection"
     assert type(clients.llm_provider_registry).__name__ == "_FakeRegistry"
     assert clients.scoring_route == ResolvedLlmRoute(
         surface="scoring",
@@ -178,7 +183,7 @@ def test_build_llm_clients_uses_shared_provider_registry(monkeypatch: pytest.Mon
         provider="vertex",
         model=bootstrap._DUPLICATION_DETECTION_LLM_MODEL,
     )
-    assert calls == ["vertex", "vertex"]
+    assert calls == []
 
 
 def test_validator_runtime_llm_clients_do_not_build_local_tool_invocation_clients(
@@ -242,7 +247,7 @@ def test_build_llm_clients_uses_scoring_model_override_for_route_resolution(
 
     clients = _build_llm_clients(settings)
 
-    assert clients.scoring_llm_provider == "provider:bedrock"
+    assert _routed_surface(clients.scoring_llm_provider) == "scoring"
     assert clients.scoring_route == ResolvedLlmRoute(
         surface="scoring",
         provider="bedrock",
@@ -675,11 +680,15 @@ def test_create_scoring_service_does_not_require_vertex_config_at_bootstrap() ->
     assert service is not None
     assert service._config.provider == "chutes"
     assert service._config.model == bootstrap._SCORING_LLM_MODEL
+    assert service._config.fallback_models == (
+        "zai-org/GLM-5-TEE",
+        "google/gemma-4-31B-turbo-TEE",
+    )
     assert service._config.reasoning_effort == bootstrap._SCORING_LLM_REASONING_EFFORT
     assert service._config.retry_policy == settings.llm.scoring_llm_retry_policy
 
 
-def test_create_scoring_service_uses_effective_route_model_and_provider() -> None:
+def test_create_scoring_service_uses_effective_route_model_and_default_provider() -> None:
     settings = Settings.model_construct(
         rpc_listen_host="127.0.0.1",
         rpc_port=8100,
@@ -733,14 +742,34 @@ def test_create_scoring_service_uses_effective_route_model_and_provider() -> Non
         ),
     )
 
-    assert service._config.provider == "bedrock"
+    assert service._config.provider == "vertex"
     assert service._config.model == "custom/internal-model"
+    assert service._config.fallback_models == (
+        "zai-org/GLM-5-TEE",
+        "google/gemma-4-31B-turbo-TEE",
+    )
     assert service._config.retry_policy == settings.llm.scoring_llm_retry_policy
+
+
+def test_scoring_fallback_tail_only_uses_candidates_after_primary() -> None:
+    assert bootstrap._fallback_tail_after_primary(bootstrap._SCORING_LLM_MODEL) == (
+        "zai-org/GLM-5-TEE",
+        "google/gemma-4-31B-turbo-TEE",
+    )
+    assert bootstrap._fallback_tail_after_primary("zai-org/GLM-5-TEE") == (
+        "google/gemma-4-31B-turbo-TEE",
+    )
+    assert bootstrap._fallback_tail_after_primary("google/gemma-4-31B-turbo-TEE") == ()
+    assert bootstrap._fallback_tail_after_primary("custom/internal-model") == (
+        "zai-org/GLM-5-TEE",
+        "google/gemma-4-31B-turbo-TEE",
+    )
 
 
 def test_create_similarity_judge_uses_scoring_llm_config() -> None:
     settings = Settings.model_construct(
         llm=LlmSettings.model_construct(
+            scoring_llm_provider="chutes",
             scoring_llm_temperature=0.0,
             scoring_llm_max_output_tokens=4096,
             scoring_llm_timeout_seconds=300.0,
@@ -757,12 +786,17 @@ def test_create_similarity_judge_uses_scoring_llm_config() -> None:
         ),
     )
 
-    assert judge._config.provider == "bedrock"
+    assert judge._config.provider == "chutes"
     assert judge._config.model == "moonshotai/Kimi-K2.5-TEE"
+    assert judge._config.fallback_models == (
+        "zai-org/GLM-5-TEE",
+        "google/gemma-4-31B-turbo-TEE",
+    )
     assert judge._config.temperature == 0.0
     assert judge._config.max_output_tokens == 4096
     assert judge._config.reasoning_effort == "high"
     assert judge._config.timeout_seconds == 300.0
+    assert judge._config.retry_policy == settings.llm.scoring_llm_retry_policy
 
 
 def test_build_llm_clients_allows_bedrock_scoring_route(
@@ -795,7 +829,7 @@ def test_build_llm_clients_allows_bedrock_scoring_route(
 
     clients = _build_llm_clients(settings)
 
-    assert clients.scoring_llm_provider == "provider:bedrock"
+    assert _routed_surface(clients.scoring_llm_provider) == "scoring"
     assert clients.scoring_route == ResolvedLlmRoute(
         surface="scoring",
         provider="bedrock",

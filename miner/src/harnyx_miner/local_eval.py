@@ -21,6 +21,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from harnyx_commons.domain.miner_task import AnswerCitation, MinerTask, ReferenceAnswer, Response
 from harnyx_commons.domain.tool_usage import LlmModelUsageCost
+from harnyx_commons.llm.provider_factory import build_routed_llm_provider
 from harnyx_commons.miner_task_ranking import (
     ArtifactRankingRow,
     CascadeConfig,
@@ -137,9 +138,7 @@ class _CliProgressReporter(ProgressRecorder):
         self._artifact_labels[artifact.artifact_id] = label
         self._artifact_totals[artifact.artifact_id] = task_count
         self._artifact_completed[artifact.artifact_id] = 0
-        self.log(
-            f"starting {label} evaluation: artifact_id={artifact.artifact_id} tasks={task_count}"
-        )
+        self.log(f"starting {label} evaluation: artifact_id={artifact.artifact_id} tasks={task_count}")
 
     def finish_artifact(
         self,
@@ -172,9 +171,7 @@ class _CliProgressReporter(ProgressRecorder):
             outcome = f"error={error.code}"
         elapsed_ms = result.run.details.elapsed_ms
         elapsed_text = f" elapsed_ms={round(elapsed_ms, 1)}" if elapsed_ms is not None else ""
-        self.log(
-            f"{label} task {completed}/{total} complete: task_id={result.run.task_id} {outcome}{elapsed_text}"
-        )
+        self.log(f"{label} task {completed}/{total} complete: task_id={result.run.task_id} {outcome}{elapsed_text}")
 
     def restore_completed_runs(
         self,
@@ -394,7 +391,14 @@ class LocalEvaluationRuntime:
             build_routed_tool_llm_provider=False,
         )
         scoring_route = _resolve_scoring_judge_route(settings)
-        scoring_llm_provider = invocation_clients.llm_provider_registry.resolve(scoring_route.provider)
+        scoring_llm_provider = build_routed_llm_provider(
+            surface="scoring",
+            default_provider=settings.llm.scoring_llm_provider,
+            llm_settings=settings.llm,
+            allowed_providers={"bedrock", "chutes", "vertex"},
+            allow_custom_openai_compatible=True,
+            provider_registry=invocation_clients.llm_provider_registry,
+        )
         scoring_service = _create_scoring_service(
             settings,
             scoring_llm_provider,
@@ -667,9 +671,7 @@ class LocalEvaluationRuntime:
             )
         except Exception as exc:
             if self._progress_reporter is not None:
-                self._progress_reporter.log(
-                    f"failure bundle write failed: path={failure_dir} error={exc}"
-                )
+                self._progress_reporter.log(f"failure bundle write failed: path={failure_dir} error={exc}")
             return False
         return True
 
@@ -698,9 +700,7 @@ class LocalEvaluationRuntime:
                     tool_concurrency_limiter=self._state.tool_concurrency_limiter,
                 )
                 if self._progress_reporter is not None:
-                    self._progress_reporter.log(
-                        f"tool host ready: callback_url={self._tool_host.host_container_url}"
-                    )
+                    self._progress_reporter.log(f"tool host ready: callback_url={self._tool_host.host_container_url}")
         if self._tool_host is None:  # pragma: no cover - defensive
             raise RuntimeError("local tool host did not initialize")
         return self._tool_host
@@ -896,8 +896,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
         target_bytes = load_agent_bytes(target_path)
         target_sha256 = agent_sha256(target_bytes)
         progress.log(
-            "loaded target artifact: "
-            f"path={target_path} size_bytes={len(target_bytes)} sha256={target_sha256}"
+            f"loaded target artifact: path={target_path} size_bytes={len(target_bytes)} sha256={target_sha256}"
         )
         target_artifact = _build_target_artifact_spec(
             batch_context=batch_context,
@@ -929,9 +928,7 @@ async def _amain(argv: Sequence[str] | None) -> None:
             run_progress_root=run_progress_root,
             progress_reporter=progress,
         )
-        progress.log(
-            f"running local evaluations: artifact_task_parallelism={_DEFAULT_LOCAL_ARTIFACT_TASK_PARALLELISM}"
-        )
+        progress.log(f"running local evaluations: artifact_task_parallelism={_DEFAULT_LOCAL_ARTIFACT_TASK_PARALLELISM}")
         if champion_artifact is not None and champion_bytes is not None:
             progress.log("running target and champion evaluations concurrently")
             target_outcome, champion_outcome = await asyncio.gather(
@@ -1030,8 +1027,7 @@ def _repo_freshness_warning(repo_path: Path) -> str | None:
     if local_head == remote_head:
         return None
     return (
-        "repository is not at latest origin/HEAD; local eval will continue, "
-        "but update before comparing final results"
+        "repository is not at latest origin/HEAD; local eval will continue, but update before comparing final results"
     )
 
 
@@ -1085,9 +1081,7 @@ def _compact_artifact_outcome_for_local_report(
 ) -> ArtifactEvaluationOutcome:
     return replace(
         outcome,
-        submissions=tuple(
-            _compact_submission_for_local_report(submission) for submission in outcome.submissions
-        ),
+        submissions=tuple(_compact_submission_for_local_report(submission) for submission in outcome.submissions),
     )
 
 
@@ -1133,9 +1127,7 @@ def _require_champion_artifact_id(detail: Mapping[str, object]) -> UUID:
     summary = _require_mapping(detail.get("summary"), label="batch summary")
     champion_artifact_id = summary.get("champion_artifact_id")
     if champion_artifact_id in (None, ""):
-        raise RuntimeError(
-            "selected batch does not expose a champion artifact; rerun with --mode target-only"
-        )
+        raise RuntimeError("selected batch does not expose a champion artifact; rerun with --mode target-only")
     return UUID(str(champion_artifact_id))
 
 
@@ -1291,11 +1283,7 @@ def _build_report(
                 task=task,
                 target_submission=target_by_task.get(task.task_id),
                 champion_submission=champion_by_task.get(task.task_id),
-                recorded_rows=(
-                    recorded_rows.get(task.task_id, ())
-                    if recorded_results.rows is not None
-                    else None
-                ),
+                recorded_rows=(recorded_rows.get(task.task_id, ()) if recorded_results.rows is not None else None),
             )
             for task in tasks
         ],
@@ -1360,10 +1348,7 @@ def _log_recorded_results_status(
         return
     path = error.path if error.path is not None else "local-eval-recorded-context"
     status_code = str(error.status_code) if error.status_code is not None else "n/a"
-    progress.log(
-        "recorded platform results unavailable: "
-        f"path={path} status_code={status_code} detail={error.detail}"
-    )
+    progress.log(f"recorded platform results unavailable: path={path} status_code={status_code} detail={error.detail}")
 
 
 def _submission_detail(submission: MinerTaskRunSubmission | None) -> dict[str, object] | None:
@@ -1592,8 +1577,7 @@ def _serialize_provider_model_usage(
     serialized: dict[str, object] = {}
     for provider_name, models in providers.items():
         serialized[provider_name] = {
-            model_name: _serialize_model_usage_cost(model_usage)
-            for model_name, model_usage in models.items()
+            model_name: _serialize_model_usage_cost(model_usage) for model_name, model_usage in models.items()
         }
     return serialized
 

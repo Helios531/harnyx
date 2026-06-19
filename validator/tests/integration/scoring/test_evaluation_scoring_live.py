@@ -7,7 +7,7 @@ import pytest
 
 from harnyx_commons.domain.miner_task import MinerTask, Query, ReferenceAnswer, Response
 from harnyx_commons.llm.provider import LlmProviderPort
-from harnyx_commons.llm.provider_factory import build_cached_llm_provider_resolver
+from harnyx_commons.llm.provider_factory import build_cached_llm_provider_registry, build_routed_llm_provider
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 from harnyx_commons.miner_task_scoring import (
     EvaluationScoringConfig,
@@ -17,6 +17,8 @@ from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.settings import Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.expensive, pytest.mark.anyio("asyncio")]
+
+
 class RecordingProvider(LlmProviderPort):
     def __init__(self, delegate: LlmProviderPort) -> None:
         self._delegate = delegate
@@ -31,6 +33,7 @@ class RecordingProvider(LlmProviderPort):
 
     async def aclose(self) -> None:
         await self._delegate.aclose()
+
 
 async def test_evaluation_scoring_live_uses_real_structured_runtime_flow() -> None:
     base_settings = Settings.load()
@@ -47,16 +50,24 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow() -> No
     )
     scoring_route = bootstrap._resolve_scoring_judge_route(settings)
 
-    resolve_provider = build_cached_llm_provider_resolver(
+    registry = build_cached_llm_provider_registry(
         llm_settings=settings.llm,
         bedrock_settings=settings.bedrock,
         vertex_settings=settings.vertex,
     )
-    llm_provider = RecordingProvider(resolve_provider(scoring_route.provider))
+    routed_provider = build_routed_llm_provider(
+        surface="scoring",
+        default_provider=settings.llm.scoring_llm_provider,
+        llm_settings=settings.llm,
+        allowed_providers={"bedrock", "chutes", "vertex"},
+        allow_custom_openai_compatible=True,
+        provider_registry=registry,
+    )
+    llm_provider = RecordingProvider(routed_provider)
     service = EvaluationScoringService(
         llm_provider=llm_provider,
         config=EvaluationScoringConfig(
-            provider=scoring_route.provider,
+            provider=settings.llm.scoring_llm_provider,
             model=scoring_route.model,
             reasoning_effort=bootstrap._SCORING_LLM_REASONING_EFFORT,
             temperature=0.0,
@@ -76,12 +87,15 @@ async def test_evaluation_scoring_live_uses_real_structured_runtime_flow() -> No
             response=Response(text="Paris is the capital of France."),
         )
     finally:
-        await llm_provider.aclose()
+        await registry.aclose()
 
     assert len(llm_provider.requests) == 2
     assert all(request.output_mode == "structured" for request in llm_provider.requests)
-    assert all(request.provider == scoring_route.provider for request in llm_provider.requests)
+    assert all(request.provider == settings.llm.scoring_llm_provider for request in llm_provider.requests)
     assert all(request.model == scoring_route.model for request in llm_provider.requests)
+    assert all(response.metadata is not None for response in llm_provider.responses)
+    assert all(response.metadata["selected_provider"] == scoring_route.provider for response in llm_provider.responses)
+    assert all(response.metadata["selected_model"] == scoring_route.model for response in llm_provider.responses)
     assert score.scoring_version == "v1"
     assert 0.0 <= score.comparison_score <= 1.0
     assert score.total_score == pytest.approx(score.comparison_score)

@@ -9,8 +9,9 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
-from harnyx_commons.llm.provider import LlmProviderPort
-from harnyx_commons.llm.provider_types import LlmProviderName
+from harnyx_commons.llm.provider import LlmProviderPort, LlmRetryExhaustedError
+from harnyx_commons.llm.provider_types import LlmProviderName, LlmRouteTarget
+from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmResponse
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest, SimilarityJudgeResult
 
@@ -53,10 +54,12 @@ class _SimilarityVerdictModel(BaseModel):
 class SimilarityJudgeConfig:
     provider: LlmProviderName
     model: str
+    fallback_models: tuple[str, ...] = ()
     temperature: float | None = None
     max_output_tokens: int | None = 20480
     reasoning_effort: str | None = "high"
     timeout_seconds: float = 300.0
+    retry_policy: RetryPolicy | None = None
 
 
 class SimilarityJudge:
@@ -70,9 +73,37 @@ class SimilarityJudge:
         self._config = config
 
     async def judge(self, request: SimilarityJudgeRequest) -> SimilarityJudgeResult:
-        llm_request = LlmRequest(
+        last_error: LlmRetryExhaustedError | None = None
+        for model in _judge_candidate_models(self._config):
+            llm_request = self._build_request(request, model=model)
+            try:
+                response = await self._llm.invoke(llm_request)
+            except LlmRetryExhaustedError as exc:
+                last_error = exc
+                continue
+            parsed = response.postprocessed
+            if parsed is None:
+                raise RuntimeError("similarity judge did not return structured output")
+            verdict = _SimilarityVerdictModel.model_validate(parsed).verdict
+            selected_provider, selected_model = _selected_route_metadata(
+                response,
+                default_provider=self._config.provider,
+                default_model=model,
+            )
+            return SimilarityJudgeResult(
+                verdict=verdict,
+                reasoning=_extract_reasoning_text(response),
+                reasoning_tokens=response.usage.reasoning_tokens,
+                model=selected_model,
+                provider=selected_provider,
+            )
+        assert last_error is not None
+        raise last_error
+
+    def _build_request(self, request: SimilarityJudgeRequest, *, model: str) -> LlmRequest:
+        return LlmRequest(
             provider=self._config.provider,
-            model=self._config.model,
+            model=model,
             messages=(
                 LlmMessage(
                     role="system",
@@ -99,19 +130,8 @@ class SimilarityJudge:
             max_output_tokens=self._config.max_output_tokens,
             reasoning_effort=self._config.reasoning_effort,
             timeout_seconds=self._config.timeout_seconds,
+            retry_policy=self._config.retry_policy,
             use_case="miner_task_similarity_judge",
-        )
-        response = await self._llm.invoke(llm_request)
-        parsed = response.postprocessed
-        if parsed is None:
-            raise RuntimeError("similarity judge did not return structured output")
-        verdict = _SimilarityVerdictModel.model_validate(parsed).verdict
-        return SimilarityJudgeResult(
-            verdict=verdict,
-            reasoning=_extract_reasoning_text(response),
-            reasoning_tokens=response.usage.reasoning_tokens,
-            model=self._config.model,
-            provider=self._config.provider,
         )
 
 
@@ -137,6 +157,24 @@ def _extract_reasoning_text(response: LlmResponse) -> str | None:
         if normalized_reasoning:
             return normalized_reasoning
     return None
+
+
+def _selected_route_metadata(
+    response: LlmResponse,
+    *,
+    default_provider: LlmProviderName,
+    default_model: str,
+) -> tuple[LlmRouteTarget, str]:
+    metadata = response.metadata or {}
+    provider = metadata.get("selected_provider", default_provider)
+    model = metadata.get("selected_model", default_model)
+    if not isinstance(provider, str) or not isinstance(model, str):
+        return default_provider, default_model
+    return provider, model
+
+
+def _judge_candidate_models(config: SimilarityJudgeConfig) -> tuple[str, ...]:
+    return (config.model, *config.fallback_models)
 
 
 __all__ = [

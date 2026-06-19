@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
-from harnyx_commons.llm.provider_types import LlmProviderName
+from harnyx_commons.llm.provider_types import LlmRouteTarget
 
 SimilarityVerdict = Literal["not_duplicate", "duplicate"]
 SimilarityVoteStatus = Literal["responded", "disqualified"]
@@ -29,7 +29,7 @@ class SimilarityJudgeResult:
     reasoning: str | None
     reasoning_tokens: int | None
     model: str
-    provider: LlmProviderName
+    provider: LlmRouteTarget
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,9 +73,7 @@ def tally_similarity_votes(votes: tuple[SimilarityVoteInput, ...]) -> Similarity
         not_duplicate_votes=not_duplicate_votes,
         duplicate_votes=duplicate_votes,
         disqualified_count=disqualified_count,
-        passes=None
-        if responding_validator_count == 0
-        else not_duplicate_votes * 2 >= responding_validator_count,
+        passes=None if responding_validator_count == 0 else not_duplicate_votes * 2 >= responding_validator_count,
     )
 
 

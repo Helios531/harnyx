@@ -19,8 +19,8 @@ class StubSimilarityJudge:
             verdict="not_duplicate",
             reasoning="provider reasoning trace",
             reasoning_tokens=19,
-            model="moonshotai/Kimi-K2.5-TEE",
-            provider="chutes",
+            model="google/gemma-4-31B-turbo-TEE",
+            provider="custom-openai-compatible:gemma4-cloud-run-turbo",
         )
 
 
@@ -77,8 +77,8 @@ def test_similarity_route_runs_validator_owned_judge() -> None:
         "verdict": "not_duplicate",
         "reasoning": "provider reasoning trace",
         "reasoning_tokens": 19,
-        "model": "moonshotai/Kimi-K2.5-TEE",
-        "provider": "chutes",
+        "model": "google/gemma-4-31B-turbo-TEE",
+        "provider": "custom-openai-compatible:gemma4-cloud-run-turbo",
     }
     assert judge.requests == [
         SimilarityJudgeRequest(

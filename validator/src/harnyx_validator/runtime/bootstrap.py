@@ -20,8 +20,12 @@ from harnyx_commons.infrastructure.state.receipt_log import InMemoryReceiptLog
 from harnyx_commons.infrastructure.state.session_registry import InMemorySessionRegistry
 from harnyx_commons.infrastructure.state.token_registry import InMemoryTokenRegistry
 from harnyx_commons.llm.provider import LlmProviderPort
-from harnyx_commons.llm.provider_factory import CachedLlmProviderRegistry, build_cached_llm_provider_registry
-from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER, parse_builtin_provider_name
+from harnyx_commons.llm.provider_factory import (
+    CachedLlmProviderRegistry,
+    build_cached_llm_provider_registry,
+    build_routed_llm_provider,
+)
+from harnyx_commons.llm.provider_types import BEDROCK_PROVIDER
 from harnyx_commons.llm.routing import ResolvedLlmRoute, resolve_llm_route
 from harnyx_commons.llm.tool_models import ALLOWED_TOOL_MODELS, parse_miner_selected_llm_provider_model
 from harnyx_commons.miner_task_scoring import (
@@ -90,6 +94,10 @@ logger = logging.getLogger("harnyx_validator.runtime")
 _SCORING_LLM_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _SCORING_LLM_REASONING_EFFORT = "high"
 _DUPLICATION_DETECTION_LLM_MODEL = "moonshotai/Kimi-K2.5-TEE"
+_JUDGE_FALLBACK_TAIL_MODELS = (
+    "zai-org/GLM-5-TEE",
+    "google/gemma-4-31B-turbo-TEE",
+)
 _SEARCH_PROVIDER_TOOLS = frozenset(("search_web", "search_ai", "fetch_page"))
 _MINER_SELECTED_SEARCH_PROVIDERS = frozenset(get_args(SearchProviderName))
 _BATCH_BLOCKING_LANE_NAME = "validator-batch-blocking"
@@ -420,12 +428,28 @@ def _build_llm_clients(settings: Settings) -> RuntimeLlmClients:
     )
     scoring_route = _resolve_scoring_judge_route(settings)
     similarity_route = _resolve_similarity_judge_route(settings)
+    scoring_provider = build_routed_llm_provider(
+        surface="scoring",
+        default_provider=settings.llm.scoring_llm_provider,
+        llm_settings=settings.llm,
+        allowed_providers={"bedrock", "chutes", "vertex"},
+        allow_custom_openai_compatible=True,
+        provider_registry=llm_provider_registry,
+    )
+    similarity_provider = build_routed_llm_provider(
+        surface="duplication_detection",
+        default_provider=settings.llm.scoring_llm_provider,
+        llm_settings=settings.llm,
+        allowed_providers={"bedrock", "chutes", "vertex"},
+        allow_custom_openai_compatible=True,
+        provider_registry=llm_provider_registry,
+    )
     return RuntimeLlmClients(
         search_client=None,
         llm_provider_registry=llm_provider_registry,
         tool_llm_provider=None,
-        scoring_llm_provider=llm_provider_registry.resolve(scoring_route.provider),
-        similarity_llm_provider=llm_provider_registry.resolve(similarity_route.provider),
+        scoring_llm_provider=scoring_provider,
+        similarity_llm_provider=similarity_provider,
         scoring_route=scoring_route,
         similarity_route=similarity_route,
     )
@@ -440,6 +464,7 @@ def _resolve_scoring_judge_route(settings: Settings) -> ResolvedLlmRoute:
         model=_effective_scoring_llm_model(settings),
         overrides=settings.llm.llm_model_provider_overrides,
         allowed_providers={"bedrock", "chutes", "vertex"},
+        allow_custom_openai_compatible=True,
     )
 
 
@@ -457,7 +482,25 @@ def _resolve_similarity_judge_route(settings: Settings) -> ResolvedLlmRoute:
         model=_DUPLICATION_DETECTION_LLM_MODEL,
         overrides=settings.llm.llm_model_provider_overrides,
         allowed_providers={"bedrock", "chutes", "vertex"},
+        allow_custom_openai_compatible=True,
     )
+
+
+def _scoring_judge_fallback_models(settings: Settings) -> tuple[str, ...]:
+    return _fallback_tail_after_primary(_effective_scoring_llm_model(settings))
+
+
+def _similarity_judge_fallback_models() -> tuple[str, ...]:
+    return _fallback_tail_after_primary(_DUPLICATION_DETECTION_LLM_MODEL)
+
+
+def _fallback_tail_after_primary(primary_model: str) -> tuple[str, ...]:
+    ordered_models = (_SCORING_LLM_MODEL, *_JUDGE_FALLBACK_TAIL_MODELS)
+    try:
+        primary_index = ordered_models.index(primary_model)
+    except ValueError:
+        return _JUDGE_FALLBACK_TAIL_MODELS
+    return ordered_models[primary_index + 1 :]
 
 
 def _build_proxy_tooling(
@@ -933,10 +976,10 @@ def _create_scoring_service(
 ) -> EvaluationScoringService:
     if provider is None:
         raise ValueError("scoring_llm_provider must be configured")
-    scoring_provider = parse_builtin_provider_name(scoring_route.provider, component="scoring")
     config = EvaluationScoringConfig(
-        provider=scoring_provider,
+        provider=settings.llm.scoring_llm_provider,
         model=scoring_route.model,
+        fallback_models=_scoring_judge_fallback_models(settings),
         temperature=settings.llm.scoring_llm_temperature,
         max_output_tokens=settings.llm.scoring_llm_max_output_tokens,
         reasoning_effort=_SCORING_LLM_REASONING_EFFORT,
@@ -957,14 +1000,15 @@ def _create_similarity_judge(
 ) -> SimilarityJudge:
     if provider is None:
         raise ValueError("similarity_llm_provider must be configured")
-    similarity_provider = parse_builtin_provider_name(similarity_route.provider, component="duplication_detection")
     config = SimilarityJudgeConfig(
-        provider=similarity_provider,
+        provider=settings.llm.scoring_llm_provider,
         model=similarity_route.model,
+        fallback_models=_similarity_judge_fallback_models(),
         temperature=settings.llm.scoring_llm_temperature,
         max_output_tokens=settings.llm.scoring_llm_max_output_tokens,
         reasoning_effort=_SCORING_LLM_REASONING_EFFORT,
         timeout_seconds=settings.llm.scoring_llm_timeout_seconds,
+        retry_policy=settings.llm.scoring_llm_retry_policy,
     )
     return SimilarityJudge(
         llm_provider=provider,

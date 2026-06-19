@@ -17,7 +17,7 @@ from harnyx_commons.domain.miner_task import (
     ScorerReasoning,
 )
 from harnyx_commons.llm.json_utils import pydantic_postprocessor
-from harnyx_commons.llm.provider import LlmProviderPort
+from harnyx_commons.llm.provider import LlmProviderPort, LlmRetryExhaustedError
 from harnyx_commons.llm.provider_types import LlmProviderName
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import LlmMessage, LlmMessageContentPart, LlmRequest, LlmResponse
@@ -122,6 +122,7 @@ class _PairwiseScore:
 class EvaluationScoringConfig:
     provider: LlmProviderName
     model: str
+    fallback_models: tuple[str, ...] = ()
     temperature: float | None = None
     max_output_tokens: int | None = 256
     reasoning_effort: str | None = None
@@ -203,9 +204,30 @@ class EvaluationScoringService:
             ensure_ascii=False,
             indent=2,
         )
-        request = LlmRequest(
+        last_error: LlmRetryExhaustedError | None = None
+        for model in _judge_candidate_models(self._config):
+            request = self._build_pairwise_request(model=model, user_prompt=user_prompt)
+            try:
+                response = await self._llm.invoke(request)
+            except LlmRetryExhaustedError as exc:
+                last_error = exc
+                continue
+            parsed = response.postprocessed
+            if parsed is None:
+                raise RuntimeError("pairwise judge did not return structured output")
+            preference = _PairwisePreference.model_validate(parsed)
+            return _PairwiseJudgeResult(
+                preferred_position=preference.preferred_position,
+                reasoning_text=_extract_reasoning_text(response),
+                reasoning_tokens=response.usage.reasoning_tokens,
+            )
+        assert last_error is not None
+        raise last_error
+
+    def _build_pairwise_request(self, *, model: str, user_prompt: str) -> LlmRequest:
+        return LlmRequest(
             provider=self._config.provider,
-            model=self._config.model,
+            model=model,
             messages=(
                 LlmMessage(
                     role="system",
@@ -226,16 +248,10 @@ class EvaluationScoringService:
             retry_policy=self._config.retry_policy,
             use_case="miner_task_pairwise_judge",
         )
-        response = await self._llm.invoke(request)
-        parsed = response.postprocessed
-        if parsed is None:
-            raise RuntimeError("pairwise judge did not return structured output")
-        preference = _PairwisePreference.model_validate(parsed)
-        return _PairwiseJudgeResult(
-            preferred_position=preference.preferred_position,
-            reasoning_text=_extract_reasoning_text(response),
-            reasoning_tokens=response.usage.reasoning_tokens,
-        )
+
+
+def _judge_candidate_models(config: EvaluationScoringConfig) -> tuple[str, ...]:
+    return (config.model, *config.fallback_models)
 
 
 def _build_pairwise_reasoning_trace(
@@ -243,9 +259,7 @@ def _build_pairwise_reasoning_trace(
     reference_first: _PairwiseJudgeResult,
 ) -> ScorerReasoning | None:
     reasoning_texts = tuple(
-        text
-        for text in (miner_first.reasoning_text, reference_first.reasoning_text)
-        if text is not None
+        text for text in (miner_first.reasoning_text, reference_first.reasoning_text) if text is not None
     )
     reasoning_tokens = _sum_reasoning_tokens(miner_first.reasoning_tokens, reference_first.reasoning_tokens)
     if not reasoning_texts and reasoning_tokens is None:

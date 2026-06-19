@@ -8,10 +8,16 @@ from pydantic import SecretStr
 from harnyx_commons.config.bedrock import BedrockSettings
 from harnyx_commons.config.llm import LlmSettings
 from harnyx_commons.config.vertex import VertexSettings
+from harnyx_commons.llm.routing import RoutedLlmProvider
 from harnyx_commons.tools.invocation_clients import build_tool_invocation_clients
 from harnyx_validator.runtime import bootstrap
 from harnyx_validator.runtime.bootstrap import _build_llm_clients
 from harnyx_validator.runtime.settings import Settings
+
+
+def _routed_surface(provider: object) -> str:
+    assert isinstance(provider, RoutedLlmProvider)
+    return provider._surface
 
 
 def _settings() -> Settings:
@@ -148,7 +154,7 @@ def test_validator_runtime_allows_scoring_override_to_bedrock(monkeypatch: pytes
 
     clients = _build_llm_clients(settings)
 
-    assert clients.scoring_llm_provider == "provider:bedrock"
+    assert _routed_surface(clients.scoring_llm_provider) == "scoring"
     assert clients.scoring_route.provider == "bedrock"
     assert clients.scoring_route.model == bootstrap._SCORING_LLM_MODEL
 
@@ -177,6 +183,6 @@ def test_validator_runtime_allows_duplication_detection_override_to_bedrock(
 
     clients = _build_llm_clients(settings)
 
-    assert clients.similarity_llm_provider == "provider:bedrock"
+    assert _routed_surface(clients.similarity_llm_provider) == "duplication_detection"
     assert clients.similarity_route.provider == "bedrock"
     assert clients.similarity_route.model == bootstrap._DUPLICATION_DETECTION_LLM_MODEL

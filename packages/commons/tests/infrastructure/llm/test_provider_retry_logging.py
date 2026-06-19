@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from harnyx_commons.llm.provider import BaseLlmProvider
+from harnyx_commons.llm.provider import BaseLlmProvider, LlmProviderError, LlmRetryExhaustedError
 from harnyx_commons.llm.retry_utils import RetryPolicy
 from harnyx_commons.llm.schema import (
     AbstractLlmRequest,
@@ -49,6 +49,48 @@ class _RetryOnceExceptionProvider(BaseLlmProvider):
             verifier=lambda _: (True, False, None),
             classify_exception=_classify,
             policy=request.retry_policy,
+        )
+
+
+class _RetryExhaustingExceptionProvider(BaseLlmProvider):
+    def __init__(self) -> None:
+        super().__init__(provider_label="openai")
+        self._retry_policy = RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0)
+
+    async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
+        del request
+        raise RuntimeError("provider timeout")
+
+    async def invoke_with_retry(self, request: AbstractLlmRequest) -> LlmResponse:
+        async def _call(current_request: AbstractLlmRequest) -> LlmResponse:
+            return await self._invoke(current_request)
+
+        return await self._call_with_retry(
+            request,
+            call_coro=_call,
+            verifier=lambda _: (True, False, None),
+            classify_exception=lambda _: (True, "transport_error"),
+        )
+
+
+class _NonRetryableExceptionProvider(BaseLlmProvider):
+    def __init__(self) -> None:
+        super().__init__(provider_label="openai")
+        self._retry_policy = RetryPolicy(attempts=2, initial_ms=0, max_ms=0, jitter=0.0)
+
+    async def _invoke(self, request: AbstractLlmRequest) -> LlmResponse:
+        del request
+        raise ValueError("bad request")
+
+    async def invoke_with_retry(self, request: AbstractLlmRequest) -> LlmResponse:
+        async def _call(current_request: AbstractLlmRequest) -> LlmResponse:
+            return await self._invoke(current_request)
+
+        return await self._call_with_retry(
+            request,
+            call_coro=_call,
+            verifier=lambda _: (True, False, None),
+            classify_exception=lambda exc: (False, f"invalid_request: {exc}"),
         )
 
 
@@ -107,6 +149,22 @@ async def test_retry_exception_log_includes_exception_details(caplog: pytest.Log
     assert retry_record.__dict__["data"]["exception_message"] == "provider transport failed"
     assert retry_record.__dict__["data"]["exception_repr"] == "RuntimeError('provider transport failed')"
     assert retry_record.__dict__["data"]["cause_chain"] == ("ValueError: dns lookup failed",)
+
+
+async def test_retryable_exception_still_raises_retry_exhausted_after_attempts() -> None:
+    provider = _RetryExhaustingExceptionProvider()
+
+    with pytest.raises(LlmRetryExhaustedError, match="transport_error"):
+        await provider.invoke_with_retry(_request())
+
+
+async def test_non_retryable_exception_raises_provider_error_without_retry_exhaustion() -> None:
+    provider = _NonRetryableExceptionProvider()
+
+    with pytest.raises(LlmProviderError, match="invalid_request: bad request") as exc_info:
+        await provider.invoke_with_retry(_request())
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
 
 
 async def test_retry_exception_log_includes_request_use_case(caplog: pytest.LogCaptureFixture) -> None:

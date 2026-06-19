@@ -20,6 +20,7 @@ _ALLOWED_MODELS = frozenset(
         "openai.gpt-oss-120b-1:0",
         "minimax.minimax-m2.5",
         "moonshotai.kimi-k2.5",
+        "zai.glm-5",
     }
 )
 _RETRYABLE_ERROR_CODES = frozenset(

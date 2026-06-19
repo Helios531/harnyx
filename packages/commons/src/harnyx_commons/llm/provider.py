@@ -81,6 +81,10 @@ class RetryContext:
 class LlmProviderError(RuntimeError):
     """Provider-owned failure before or during an LLM operation."""
 
+    def __init__(self, reason: str, *, response: LlmResponse | None = None) -> None:
+        super().__init__(reason)
+        self.response = response
+
 
 class LlmProviderConfigurationError(LlmProviderError):
     """LLM provider is missing required configuration."""
@@ -368,6 +372,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
                     cause_chain=_exception_cause_chain(exc),
                 ),
                 retryable,
+                source_exception=exc,
             )
             return None
 
@@ -516,11 +521,18 @@ class BaseLlmProvider(ABC, LlmProviderPort):
         failure: RetryFailureDetail,
         retryable: bool,
         response: LlmResponse | None = None,
+        source_exception: Exception | None = None,
     ) -> None:
         """Handle a phase failure - either raise or prepare for retry."""
         response_for_error = response if response is not None else ctx.last_response
-        if ctx.is_exhausted(attempt) or not retryable:
+        if retryable and ctx.is_exhausted(attempt):
             raise LlmRetryExhaustedError(failure.reason, response=response_for_error)
+        if not retryable:
+            if source_exception is not None:
+                if isinstance(source_exception, LlmProviderError):
+                    raise source_exception
+                raise LlmProviderError(failure.reason) from source_exception
+            raise LlmProviderError(failure.reason, response=response_for_error)
         ctx.reasons.append(failure.reason)
         self._log_retry(phase, request, attempt, failure, ctx.policy)
         await asyncio.sleep(backoff_ms(attempt, ctx.policy) / 1000)
@@ -602,10 +614,7 @@ class BaseLlmProvider(ABC, LlmProviderPort):
             data["cause_chain"] = failure.cause_chain
         message = f"llm.retry.{phase}"
         if phase == "exception" and failure.exception_type is not None:
-            message = (
-                f"{message}: {failure.exception_type}: "
-                f"{failure.exception_message or failure.reason}"
-            )
+            message = f"{message}: {failure.exception_type}: {failure.exception_message or failure.reason}"
         self._llm_logger.warning(
             message,
             extra={"data": data},
@@ -669,7 +678,7 @@ def _error_raw_payload_metadata(
     request: AbstractLlmRequest,
     exc: Exception,
 ) -> dict[str, object] | None:
-    if not isinstance(exc, LlmRetryExhaustedError):
+    if not isinstance(exc, (LlmProviderError, LlmRetryExhaustedError)):
         return None
 
     response = exc.response
@@ -720,12 +729,7 @@ def _build_reasoning_metadata(
     )
     reasoning_tokens = int(usage.reasoning_tokens or 0)
 
-    if not (
-        include_thoughts_requested
-        or thought_text_parts
-        or has_thought_signature
-        or reasoning_tokens > 0
-    ):
+    if not (include_thoughts_requested or thought_text_parts or has_thought_signature or reasoning_tokens > 0):
         return None
 
     return {
@@ -1050,6 +1054,7 @@ def _record_child_observations(
             output={"result": tool_call.output},
             metadata={"provider": provider_label},
         )
+
 
 __all__ = [
     "ALLOWED_LLM_PROVIDERS",

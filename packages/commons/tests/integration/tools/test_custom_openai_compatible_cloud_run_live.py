@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from pydantic import BaseModel
@@ -79,6 +80,32 @@ async def test_gemma_cloud_run_custom_openai_compatible_live() -> None:
 
 @pytest.mark.expensive
 @pytest.mark.anyio("asyncio")
+async def test_gemma_cloud_run_custom_openai_compatible_scoring_route_live() -> None:
+    response = await _invoke_live_gemma(
+        LlmRequest(
+            provider="chutes",
+            model=_GEMMA_MODEL,
+            messages=(
+                LlmMessage(
+                    role="user",
+                    content=(LlmMessageContentPart.input_text('Reply with only "ok".'),),
+                ),
+            ),
+            temperature=0.0,
+            max_output_tokens=32,
+            timeout_seconds=180.0,
+        ),
+        surface="scoring",
+    )
+
+    assert response.raw_text
+    assert response.metadata is not None
+    assert response.metadata["effective_provider"] == _GEMMA_ROUTE_TARGET
+    assert response.metadata["effective_model"] == _GEMMA_MODEL
+
+
+@pytest.mark.expensive
+@pytest.mark.anyio("asyncio")
 async def test_qwen36_cloud_run_custom_openai_compatible_live() -> None:
     response = await _invoke_live_tool_model(
         model=_QWEN36_MODEL,
@@ -104,11 +131,7 @@ async def test_gemma_cloud_run_json_object_live() -> None:
             messages=(
                 LlmMessage(
                     role="user",
-                    content=(
-                        LlmMessageContentPart.input_text(
-                            'Return JSON only with {"ping":"pong","count":2}.'
-                        ),
-                    ),
+                    content=(LlmMessageContentPart.input_text('Return JSON only with {"ping":"pong","count":2}.'),),
                 ),
             ),
             temperature=0.0,
@@ -140,8 +163,7 @@ async def test_gemma_cloud_run_json_schema_live_with_throwaway_schema() -> None:
                     role="user",
                     content=(
                         LlmMessageContentPart.input_text(
-                            'Return JSON only with {"animal":"otter",'
-                            '"count":3,"approved":true}.'
+                            'Return JSON only with {"animal":"otter","count":3,"approved":true}.'
                         ),
                     ),
                 ),
@@ -179,6 +201,8 @@ def test_gemma_live_settings_use_test_endpoint_and_route() -> None:
     assert auth.credential_source == "service_account_json_b64_env"
     assert auth.credential_env == "GCP_SERVICE_ACCOUNT_CREDENTIAL_BASE64"
     assert settings.llm_model_provider_overrides["tool"][_GEMMA_MODEL] == _GEMMA_ROUTE_TARGET
+    assert settings.llm_model_provider_overrides["scoring"][_GEMMA_MODEL] == _GEMMA_ROUTE_TARGET
+    assert settings.llm_model_provider_overrides["duplication_detection"][_GEMMA_MODEL] == _GEMMA_ROUTE_TARGET
 
 
 def test_qwen36_live_settings_use_test_endpoint_and_route() -> None:
@@ -235,7 +259,13 @@ def _build_live_settings(
         LLM_OPENAI_COMPATIBLE_ENDPOINTS_JSON=json.dumps(
             [_cloud_run_endpoint_config(required_endpoint_id, service_url)]
         ),
-        LLM_MODEL_PROVIDER_OVERRIDES_JSON=json.dumps({"tool": {required_model: required_route}}),
+        LLM_MODEL_PROVIDER_OVERRIDES_JSON=json.dumps(
+            {
+                "tool": {required_model: required_route},
+                "scoring": {required_model: required_route},
+                "duplication_detection": {required_model: required_route},
+            }
+        ),
     )
     _require_cloud_run_google_id_token_auth(settings, required_endpoint_id)
     return settings
@@ -315,12 +345,21 @@ async def _invoke_live_tool_model(
     return await _invoke_live_request(settings=settings, request=request)
 
 
-async def _invoke_live_gemma(request: LlmRequest) -> LlmResponse:
+async def _invoke_live_gemma(
+    request: LlmRequest,
+    *,
+    surface: Literal["tool", "scoring", "duplication_detection"] = "tool",
+) -> LlmResponse:
     settings = _build_live_gemma_settings(os.environ)
-    return await _invoke_live_request(settings=settings, request=request)
+    return await _invoke_live_request(settings=settings, request=request, surface=surface)
 
 
-async def _invoke_live_request(*, settings: LlmSettings, request: LlmRequest) -> LlmResponse:
+async def _invoke_live_request(
+    *,
+    settings: LlmSettings,
+    request: LlmRequest,
+    surface: Literal["tool", "scoring", "duplication_detection"] = "tool",
+) -> LlmResponse:
     registry = build_cached_llm_provider_registry(
         llm_settings=settings,
         bedrock_settings=BedrockSettings.model_construct(region="us-east-1"),
@@ -332,10 +371,10 @@ async def _invoke_live_request(*, settings: LlmSettings, request: LlmRequest) ->
         ),
     )
     provider = build_routed_llm_provider(
-        surface="tool",
+        surface=surface,
         default_provider="chutes",
         llm_settings=settings,
-        allowed_providers={"chutes", "vertex"},
+        allowed_providers={"bedrock", "chutes", "vertex"},
         allow_custom_openai_compatible=True,
         provider_registry=registry,
     )

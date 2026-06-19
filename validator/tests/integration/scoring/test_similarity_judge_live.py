@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from harnyx_commons.llm.provider import LlmProviderPort
-from harnyx_commons.llm.provider_factory import build_cached_llm_provider_resolver
+from harnyx_commons.llm.provider_factory import build_cached_llm_provider_registry, build_routed_llm_provider
 from harnyx_commons.llm.schema import AbstractLlmRequest, LlmResponse
 from harnyx_commons.miner_task_similarity import SimilarityJudgeRequest
 from harnyx_validator.application.similarity_judge import SimilarityJudge, SimilarityJudgeConfig
@@ -47,16 +47,24 @@ async def test_similarity_judge_live_uses_real_structured_runtime_flow() -> None
     )
     similarity_route = bootstrap._resolve_similarity_judge_route(settings)
 
-    resolve_provider = build_cached_llm_provider_resolver(
+    registry = build_cached_llm_provider_registry(
         llm_settings=settings.llm,
         bedrock_settings=settings.bedrock,
         vertex_settings=settings.vertex,
     )
-    llm_provider = RecordingProvider(resolve_provider(similarity_route.provider))
+    routed_provider = build_routed_llm_provider(
+        surface="duplication_detection",
+        default_provider=settings.llm.scoring_llm_provider,
+        llm_settings=settings.llm,
+        allowed_providers={"bedrock", "chutes", "vertex"},
+        allow_custom_openai_compatible=True,
+        provider_registry=registry,
+    )
+    llm_provider = RecordingProvider(routed_provider)
     service = SimilarityJudge(
         llm_provider=llm_provider,
         config=SimilarityJudgeConfig(
-            provider=similarity_route.provider,
+            provider=settings.llm.scoring_llm_provider,
             model=similarity_route.model,
             reasoning_effort=bootstrap._SCORING_LLM_REASONING_EFFORT,
             temperature=0.0,
@@ -85,7 +93,7 @@ async def test_similarity_judge_live_uses_real_structured_runtime_flow() -> None
     try:
         result = await service.judge(request)
     finally:
-        await llm_provider.aclose()
+        await registry.aclose()
 
     assert result.verdict in {"not_duplicate", "duplicate"}
     assert result.model == similarity_route.model
@@ -93,9 +101,12 @@ async def test_similarity_judge_live_uses_real_structured_runtime_flow() -> None
     assert len(llm_provider.requests) == 1
     llm_request = llm_provider.requests[0]
     assert llm_request.output_mode == "structured"
-    assert llm_request.provider == similarity_route.provider
+    assert llm_request.provider == settings.llm.scoring_llm_provider
     assert llm_request.model == similarity_route.model
     assert llm_request.use_case == "miner_task_similarity_judge"
+    assert llm_provider.responses[0].metadata is not None
+    assert llm_provider.responses[0].metadata["selected_provider"] == similarity_route.provider
+    assert llm_provider.responses[0].metadata["selected_model"] == similarity_route.model
     observed_reasoning = [
         response.choices[0].message.reasoning
         for response in llm_provider.responses

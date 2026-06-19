@@ -576,14 +576,14 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
 ) -> None:
     captured: dict[str, object] = {}
     scoring_llm_provider = _FakeAsyncResource()
+    routed_calls: list[dict[str, object]] = []
 
     class _FakeRegistry(_FakeAsyncResource):
         def resolve(self, name: str) -> _FakeAsyncResource:
-            assert name == "chutes"
-            return scoring_llm_provider
+            raise AssertionError(f"scoring provider should be routed, not eagerly resolved: {name}")
 
     settings = SimpleNamespace(
-        llm=object(),
+        llm=SimpleNamespace(scoring_llm_provider="chutes"),
         bedrock=object(),
         vertex=object(),
         sandbox=SimpleNamespace(
@@ -614,6 +614,11 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
     )
     monkeypatch.setattr(
         local_eval,
+        "build_routed_llm_provider",
+        lambda **kwargs: routed_calls.append(kwargs) or scoring_llm_provider,
+    )
+    monkeypatch.setattr(
+        local_eval,
         "_resolve_scoring_judge_route",
         lambda _settings: SimpleNamespace(provider="chutes"),
     )
@@ -638,6 +643,16 @@ def test_local_eval_runtime_create_binds_sandbox_publish_to_loopback(
 
     assert captured["host"] == "127.0.0.1"
     assert captured["published_port_bind_host"] == "127.0.0.1"
+    assert routed_calls == [
+        {
+            "surface": "scoring",
+            "default_provider": "chutes",
+            "llm_settings": settings.llm,
+            "allowed_providers": {"bedrock", "chutes", "vertex"},
+            "allow_custom_openai_compatible": True,
+            "provider_registry": runtime._llm_provider_registry,
+        }
+    ]
     assert runtime._sandbox_manager is not None
 
 

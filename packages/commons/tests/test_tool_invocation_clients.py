@@ -25,7 +25,7 @@ GEMMA_MODEL = "google/gemma-4-31B-turbo-TEE"
 GEMMA_ROUTE_TARGET = "custom-openai-compatible:gemma4-cloud-run-turbo"
 QWEN36_MODEL = "Qwen/Qwen3.6-27B-TEE"
 QWEN36_ROUTE_TARGET = "custom-openai-compatible:qwen36-cloud-run"
-OPENROUTER_ROUTED_MODELS = ("openai/gpt-oss-20b", "openai/gpt-oss-120b", QWEN36_MODEL)
+CHUTES_SELECTED_MODELS = ("openai/gpt-oss-20b", "openai/gpt-oss-120b", QWEN36_MODEL)
 
 
 class _FakeLlmProvider:
@@ -495,8 +495,8 @@ async def test_tool_invocation_clients_route_qwen36_tool_model_to_custom_endpoin
 
 
 @pytest.mark.anyio("asyncio")
-@pytest.mark.parametrize("model", OPENROUTER_ROUTED_MODELS)
-async def test_tool_invocation_clients_route_chutes_selected_openrouter_model_to_openrouter(
+@pytest.mark.parametrize("model", CHUTES_SELECTED_MODELS)
+async def test_tool_invocation_clients_keep_chutes_selected_model_on_chutes(
     monkeypatch: pytest.MonkeyPatch,
     model: str,
 ) -> None:
@@ -513,8 +513,8 @@ async def test_tool_invocation_clients_route_chutes_selected_openrouter_model_to
     assert clients.tool_llm_provider is not None
     await clients.tool_llm_provider.invoke(_openrouter_tool_request(model=model))
 
-    assert registry.requests_by_provider["openrouter"][0].provider == "openrouter"
-    assert registry.requests_by_provider["openrouter"][0].model == model
+    assert registry.requests_by_provider["chutes"][0].provider == "chutes"
+    assert registry.requests_by_provider["chutes"][0].model == model
 
 
 @pytest.mark.parametrize(

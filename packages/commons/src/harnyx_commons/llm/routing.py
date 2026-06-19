@@ -9,8 +9,6 @@ from typing import Literal, cast
 
 from harnyx_commons.llm.provider import LlmProviderPort
 from harnyx_commons.llm.provider_types import (
-    CHUTES_PROVIDER,
-    OPENROUTER_PROVIDER,
     LlmProviderName,
     LlmRouteTarget,
     parse_custom_openai_compatible_target,
@@ -28,11 +26,6 @@ LlmRouteSurface = Literal[
     "duplication_detection",
 ]
 LlmModelProviderOverrides = dict[LlmRouteSurface, dict[str, LlmRouteTarget]]
-OPENROUTER_ROUTED_TOOL_MODELS: tuple[str, ...] = (
-    "openai/gpt-oss-20b",
-    "openai/gpt-oss-120b",
-    "Qwen/Qwen3.6-27B-TEE",
-)
 
 _ALLOWED_ROUTE_SURFACES: tuple[LlmRouteSurface, ...] = (
     "generator",
@@ -118,26 +111,15 @@ def resolve_llm_route(
     override_provider = overrides.get(surface, {}).get(normalized_model)
     if override_provider is None:
         selected_provider: LlmRouteTarget = default_provider
-        return _route_resolved_provider(surface=surface, provider=selected_provider, model=normalized_model)
+        return ResolvedLlmRoute(surface=surface, provider=selected_provider, model=normalized_model)
     custom_endpoint_id = parse_custom_openai_compatible_target(override_provider)
     if custom_endpoint_id is not None:
         if not allow_custom_openai_compatible:
             raise ValueError(f"{surface} override provider {override_provider!r} is not supported")
-        return _route_resolved_provider(surface=surface, provider=override_provider, model=normalized_model)
+        return ResolvedLlmRoute(surface=surface, provider=override_provider, model=normalized_model)
     if override_provider not in allowed_providers:
         raise ValueError(f"{surface} override provider {override_provider!r} is not supported")
-    return _route_resolved_provider(surface=surface, provider=override_provider, model=normalized_model)
-
-
-def _route_resolved_provider(
-    *,
-    surface: LlmRouteSurface,
-    provider: LlmRouteTarget,
-    model: str,
-) -> ResolvedLlmRoute:
-    if surface == "tool" and provider == CHUTES_PROVIDER and model in OPENROUTER_ROUTED_TOOL_MODELS:
-        return ResolvedLlmRoute(surface=surface, provider=OPENROUTER_PROVIDER, model=model)
-    return ResolvedLlmRoute(surface=surface, provider=provider, model=model)
+    return ResolvedLlmRoute(surface=surface, provider=override_provider, model=normalized_model)
 
 
 def with_effective_route_metadata(response: LlmResponse, route: ResolvedLlmRoute) -> LlmResponse:

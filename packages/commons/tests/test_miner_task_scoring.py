@@ -13,6 +13,7 @@ from harnyx_commons.domain.miner_task import (
     Response,
     ScorerReasoning,
 )
+from harnyx_commons.llm.provider import LlmRetryExhaustedError
 from harnyx_commons.llm.schema import LlmChoice, LlmChoiceMessage, LlmResponse, LlmUsage
 from harnyx_commons.miner_task_scoring import (
     _MAX_RENDERED_CITATIONS,
@@ -77,6 +78,24 @@ class AliasStubLlmProvider:
         return None
 
 
+class SequenceLlmProvider:
+    def __init__(self, outcomes: list[LlmResponse | Exception]) -> None:
+        self._outcomes = outcomes
+        self.requests: list[object] = []
+
+    async def invoke(self, request: object) -> LlmResponse:
+        self.requests.append(request)
+        if not self._outcomes:
+            raise RuntimeError("missing pairwise outcome")
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    async def aclose(self) -> None:
+        return None
+
+
 def _pairwise_payload(request: object) -> dict[str, object]:
     user_prompt = request.messages[1].content[0].text
     _, payload_json = user_prompt.split("Payload:\n", 1)
@@ -123,6 +142,60 @@ async def test_scoring_service_returns_pairwise_score_directly() -> None:
     assert score.total_score == pytest.approx(1.0)
 
 
+async def test_scoring_service_tries_next_candidate_after_true_retry_exhaustion() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    llm = SequenceLlmProvider(
+        [
+            LlmRetryExhaustedError("primary exhausted"),
+            _pairwise_response(preferred_position="first", reasoning_text=None, reasoning_tokens=None),
+            _pairwise_response(preferred_position="second", reasoning_text=None, reasoning_tokens=None),
+        ]
+    )
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(
+            provider="chutes",
+            model="primary-judge",
+            fallback_models=("fallback-judge",),
+        ),
+    )
+
+    score = await service.score(task=task, response=Response(text="Miner says 42."))
+
+    assert score.comparison_score == pytest.approx(1.0)
+    assert [request.model for request in llm.requests] == [
+        "primary-judge",
+        "fallback-judge",
+        "primary-judge",
+    ]
+
+
+async def test_scoring_service_does_not_advance_after_non_retryable_failure() -> None:
+    task = MinerTask(
+        task_id=uuid4(),
+        query=Query(text="What is the answer?"),
+        reference_answer=ReferenceAnswer(text="The answer is 42."),
+    )
+    llm = SequenceLlmProvider([RuntimeError("provider rejected request")])
+    service = EvaluationScoringService(
+        llm_provider=llm,
+        config=EvaluationScoringConfig(
+            provider="chutes",
+            model="primary-judge",
+            fallback_models=("fallback-judge",),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="provider rejected request"):
+        await service.score(task=task, response=Response(text="Miner says 42."))
+
+    assert [request.model for request in llm.requests] == ["primary-judge"]
+
+
 async def test_scoring_service_records_split_pairwise_decision() -> None:
     task = MinerTask(
         task_id=uuid4(),
@@ -146,9 +219,7 @@ async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
         query=Query(text="Which answer is better?"),
         reference_answer=ReferenceAnswer(
             text="Reference answer.",
-            citations=(
-                AnswerCitation(url="https://ref.example.com", title="Reference title"),
-            ),
+            citations=(AnswerCitation(url="https://ref.example.com", title="Reference title"),),
         ),
     )
     llm = StubLlmProvider([("first", None, None), ("second", None, None)])
@@ -212,8 +283,7 @@ async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
     assert "Reward broad, relevant traceability" in user_prompt
     assert "validator-materialized `[slice start:end]` excerpts" in user_prompt
     assert (
-        "Reward only answer-visible subclaim coverage, citation relevance, and direct evidence support"
-        in user_prompt
+        "Reward only answer-visible subclaim coverage, citation relevance, and direct evidence support" in user_prompt
     )
     assert "Do not reward citation count by itself" in user_prompt
     assert user_prompt.index("7. Treat a claim as having citation evidence") < user_prompt.index(
@@ -221,8 +291,7 @@ async def test_scoring_service_includes_citations_in_pairwise_prompt() -> None:
     )
     assert "Ignore writing style and inline citation formatting unless they affect factual correctness" in user_prompt
     assert (
-        "do not prefer an uncited answer solely because a cited answer has imperfect bracket formatting"
-        in user_prompt
+        "do not prefer an uncited answer solely because a cited answer has imperfect bracket formatting" in user_prompt
     )
 
 
@@ -251,8 +320,7 @@ async def test_scoring_service_deduplicates_exact_payloads_and_caps_citations() 
         AnswerCitation(url="https://miner.example.com", note="Miner note"),
     ]
     citations.extend(
-        AnswerCitation(url=f"https://extra-{index}.example.com")
-        for index in range(_MAX_RENDERED_CITATIONS + 3)
+        AnswerCitation(url=f"https://extra-{index}.example.com") for index in range(_MAX_RENDERED_CITATIONS + 3)
     )
 
     await service.score(task=task, response=Response(text="Miner answer.", citations=tuple(citations)))
@@ -262,9 +330,9 @@ async def test_scoring_service_deduplicates_exact_payloads_and_caps_citations() 
     assert len(validated_citations) == _MAX_RENDERED_CITATIONS
     assert [item["url"] for item in validated_citations].count("https://same-source.example.com") == 2
     assert [item["url"] for item in validated_citations].count("https://miner.example.com") == 1
-    assert validated_citations.count(
-        {"url": "https://same-source.example.com", "title": "Title A", "note": "Note A"}
-    ) == 1
+    assert (
+        validated_citations.count({"url": "https://same-source.example.com", "title": "Title A", "note": "Note A"}) == 1
+    )
 
 
 async def test_pairwise_prompt_preserves_same_url_citations_as_distinct_entries() -> None:
@@ -282,9 +350,7 @@ async def test_pairwise_prompt_preserves_same_url_citations_as_distinct_entries(
                 AnswerCitation(
                     url="https://oscars.example.com/standards",
                     title="Representation and Inclusion Standards",
-                    note=(
-                        "Mini-major studios need two apprentices; major studios need ongoing apprenticeships."
-                    ),
+                    note=("Mini-major studios need two apprentices; major studios need ongoing apprenticeships."),
                 ),
             ),
         ),
