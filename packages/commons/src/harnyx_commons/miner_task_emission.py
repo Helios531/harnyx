@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from math import ceil, isfinite
+from math import ceil, floor, fsum, isfinite
+from typing import TypeVar
 
 OWNER_UID = 0
 DEFAULT_MINER_PARTICIPATION_EMISSION = 0.004
+TOTAL_EMISSION_FRACTION = 1.0
+_TOTAL_WEIGHT_EPSILON = 1e-12
+_ParticipantKey = TypeVar("_ParticipantKey")
 
 
 class ParticipantEmissionTotalWeightError(ValueError):
@@ -69,10 +73,13 @@ def participant_emission_fraction(
         or miner_participation_emission > 1.0
     ):
         raise ValueError("miner participation emission must be between 0.0 and 1.0")
-    miner_fraction = participant_count * miner_participation_emission
-    if miner_fraction > 1.0:
-        raise ParticipantEmissionTotalWeightError("participant emission exceeds total weight")
-    return miner_fraction
+    if miner_participation_emission == 0.0 or participant_count == 0:
+        return 0.0
+    payable_count = min(
+        participant_count,
+        floor((TOTAL_EMISSION_FRACTION + _TOTAL_WEIGHT_EPSILON) / miner_participation_emission),
+    )
+    return min(TOTAL_EMISSION_FRACTION, payable_count * miner_participation_emission)
 
 
 def compose_participant_emission_weights(
@@ -80,12 +87,27 @@ def compose_participant_emission_weights(
     *,
     miner_participation_emission: float = DEFAULT_MINER_PARTICIPATION_EMISSION,
 ) -> dict[int, float]:
+    _validate_miner_participation_emission(miner_participation_emission)
     distinct_uids = tuple(dict.fromkeys(uid for uid in registered_participant_uids if uid != OWNER_UID))
-    participant_emission_fraction(
-        len(distinct_uids),
-        miner_participation_emission=miner_participation_emission,
+    return _capped_allocations_in_order(
+        tuple((uid, miner_participation_emission) for uid in distinct_uids)
     )
-    return {uid: miner_participation_emission for uid in distinct_uids}
+
+
+def compose_flat_participant_emission_allocations(
+    participant_keys: Sequence[str],
+    *,
+    miner_participation_emission: float = DEFAULT_MINER_PARTICIPATION_EMISSION,
+) -> dict[str, float]:
+    _validate_miner_participation_emission(miner_participation_emission)
+    distinct_keys: dict[str, None] = {}
+    for participant_key in participant_keys:
+        if not participant_key:
+            raise ValueError("participant key must be non-empty")
+        distinct_keys.setdefault(participant_key, None)
+    return _capped_allocations_in_order(
+        tuple((participant_key, miner_participation_emission) for participant_key in distinct_keys)
+    )
 
 
 def compose_tiered_participant_emission_allocations(
@@ -117,7 +139,7 @@ def compose_tiered_participant_emission_allocations(
 
     top_floor = _score_floor(ordered, fraction=0.30)
     middle_floor = _score_floor(ordered, fraction=1.00)
-    allocations: dict[str, float] = {}
+    ordered_allocations: list[tuple[str, float]] = []
     for participant_key, score in ordered:
         if score <= 0.0:
             continue
@@ -127,10 +149,9 @@ def compose_tiered_participant_emission_allocations(
             multiplier = 1.0
         else:
             continue
-        allocations[participant_key] = miner_participation_emission * multiplier
+        ordered_allocations.append((participant_key, miner_participation_emission * multiplier))
 
-    _validate_participant_miner_fraction(sum(allocations.values()))
-    return allocations
+    return _capped_allocations_in_order(tuple(ordered_allocations))
 
 
 def compose_emission_weights(*components: dict[int, float]) -> dict[int, float]:
@@ -141,10 +162,10 @@ def compose_emission_weights(*components: dict[int, float]) -> dict[int, float]:
                 continue
             weights[uid] = weights.get(uid, 0.0) + weight
 
-    miner_fraction = sum(weights.values())
-    if miner_fraction > 1.0:
+    miner_fraction = fsum(weights.values())
+    if _exceeds_total_emission(miner_fraction):
         raise ValueError("emission exceeds total weight")
-    weights[OWNER_UID] = 1.0 - miner_fraction
+    weights[OWNER_UID] = TOTAL_EMISSION_FRACTION - min(TOTAL_EMISSION_FRACTION, miner_fraction)
     return weights
 
 
@@ -167,9 +188,24 @@ def _validate_miner_participation_emission(miner_participation_emission: float) 
         raise ValueError("miner participation emission must be between 0.0 and 1.0")
 
 
-def _validate_participant_miner_fraction(miner_fraction: float) -> None:
-    if miner_fraction > 1.0:
-        raise ParticipantEmissionTotalWeightError("participant emission exceeds total weight")
+def _capped_allocations_in_order(
+    weighted_participants: Sequence[tuple[_ParticipantKey, float]],
+) -> dict[_ParticipantKey, float]:
+    allocations: dict[_ParticipantKey, float] = {}
+    miner_fraction = 0.0
+    for participant_key, participant_emission in weighted_participants:
+        if participant_emission <= 0.0:
+            continue
+        next_fraction = miner_fraction + participant_emission
+        if _exceeds_total_emission(next_fraction):
+            break
+        allocations[participant_key] = participant_emission
+        miner_fraction = min(TOTAL_EMISSION_FRACTION, next_fraction)
+    return allocations
+
+
+def _exceeds_total_emission(miner_fraction: float) -> bool:
+    return miner_fraction > TOTAL_EMISSION_FRACTION + _TOTAL_WEIGHT_EPSILON
 
 
 __all__ = [
@@ -180,6 +216,7 @@ __all__ = [
     "apply_miner_emission_cap",
     "compose_champion_weights",
     "compose_emission_weights",
+    "compose_flat_participant_emission_allocations",
     "compose_participant_emission_weights",
     "compose_tiered_participant_emission_allocations",
     "owner_fallback_weights",
